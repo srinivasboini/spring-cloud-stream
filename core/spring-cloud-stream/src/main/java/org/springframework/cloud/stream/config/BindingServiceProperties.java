@@ -20,7 +20,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
@@ -44,7 +44,6 @@ import org.springframework.core.convert.converter.Converter;
 import org.springframework.core.convert.support.GenericConversionService;
 import org.springframework.integration.support.utils.IntegrationUtils;
 import org.springframework.util.Assert;
-import org.springframework.util.StringUtils;
 
 /**
  * @author Dave Syer
@@ -53,6 +52,7 @@ import org.springframework.util.StringUtils;
  * @author Ilayaperumal Gopinathan
  * @author Oleg Zhurakousky
  * @author Michael Michailidis
+ * @author Kurt Hong
  */
 @ConfigurationProperties("spring.cloud.stream")
 @JsonInclude(Include.NON_DEFAULT)
@@ -60,15 +60,6 @@ public class BindingServiceProperties
 	implements ApplicationContextAware, InitializingBean {
 
 	private static final int DEFAULT_BINDING_RETRY_INTERVAL = 30;
-
-	/**
-	 *  A semi-colon delimited string representing the names of the sources based on which source bindings will be created.
-	 *  This is primarily to support cases where source binding may be required without providing a corresponding Supplier.
-	 *  (e.g., for cases where the actual source of data is outside of scope of spring-cloud-stream - HTTP -> Stream)
-	 *  @deprecated use {@link #outputBindings}
-	 */
-	@Deprecated
-	private String source;
 
 	/**
 	 * A semi-colon delimited string to explicitly define input bindings (specifically for cases when there
@@ -115,8 +106,7 @@ public class BindingServiceProperties
 	 * For example; This sets the content-type for the 'input' binding of a Sink
 	 * application: 'spring.cloud.stream.bindings.input.contentType=text/plain'
 	 */
-	private Map<String, BindingProperties> bindings = new TreeMap<>(
-		String.CASE_INSENSITIVE_ORDER);
+	private Map<String, BindingProperties> bindings = new ConcurrentHashMap<>();
 
 	/**
 	 * Additional per-binder properties (see {@link BinderProperties}) if more then one
@@ -132,12 +122,6 @@ public class BindingServiceProperties
 	 * available (e.g., 'rabbit').
 	 */
 	private String defaultBinder;
-
-	/**
-	 * A list of destinations that can be bound dynamically. If set, only listed
-	 * destinations can be bound.
-	 */
-	private String[] dynamicDestinations = new String[0];
 
 	/**
 	 * The maximum size of Least Recently Used (LRU) cache of dynamic destinations. Once
@@ -203,14 +187,6 @@ public class BindingServiceProperties
 		this.instanceCount = instanceCount;
 	}
 
-	public String[] getDynamicDestinations() {
-		return this.dynamicDestinations;
-	}
-
-	public void setDynamicDestinations(String[] dynamicDestinations) {
-		this.dynamicDestinations = dynamicDestinations;
-	}
-
 	@Override
 	public void setApplicationContext(ApplicationContext applicationContext)
 			throws BeansException {
@@ -255,7 +231,6 @@ public class BindingServiceProperties
 		properties.put("instanceIndex", String.valueOf(getInstanceIndex()));
 		properties.put("instanceCount", String.valueOf(getInstanceCount()));
 		properties.put("defaultBinder", getDefaultBinder());
-		properties.put("dynamicDestinations", getDynamicDestinations());
 		for (Map.Entry<String, BindingProperties> entry : this.bindings.entrySet()) {
 			properties.put(entry.getKey(), entry.getValue().toString());
 		}
@@ -322,23 +297,6 @@ public class BindingServiceProperties
 		this.bindingRetryInterval = bindingRetryInterval;
 	}
 
-	/**
-	 * @deprecated in favor of {@link #getOutputBindings()}
-	 */
-	@Deprecated
-	public String getSource() {
-		return source;
-	}
-
-	/**
-	 * @deprecated in favor of {@link #setOutputBindings()}
-	 */
-	@Deprecated
-	public void setSource(String source) {
-		this.source = source;
-		this.outputBindings = source;
-	}
-
 	public void updateProducerProperties(String bindingName,
 			ProducerProperties producerProperties) {
 		if (this.bindings.containsKey(bindingName)) {
@@ -368,8 +326,6 @@ public class BindingServiceProperties
 	}
 
 	public void setOutputBindings(String outputBindings) {
-		Assert.state(!StringUtils.hasText(this.source), "Setting 'source' and 'output-binding' is not allowed "
-				+ "because 'source' is deprecated in favor of 'output-binding'.");
 		this.outputBindings = outputBindings;
 	}
 

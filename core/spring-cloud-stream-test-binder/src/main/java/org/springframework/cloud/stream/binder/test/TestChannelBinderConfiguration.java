@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2020 the original author or authors.
+ * Copyright 2017-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,8 @@ package org.springframework.cloud.stream.binder.test;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+
+import io.micrometer.observation.ObservationRegistry;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -40,9 +42,10 @@ import org.springframework.integration.config.EnableIntegration;
  * @param <T> binding type
  * @author Oleg Zhurakousky
  * @author David Turanski
+ * @author Soby Chacko
  * @see TestChannelBinder
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnMissingBean(Binder.class)
 @Import(BinderFactoryAutoConfiguration.class)
 @EnableIntegration
@@ -106,4 +109,9 @@ public class TestChannelBinderConfiguration<T> {
 		return new TestChannelBinderProvisioner();
 	}
 
+	@Bean
+	@ConditionalOnMissingBean
+	public ObservationRegistry observationRegistry() {
+		return ObservationRegistry.create();
+	}
 }

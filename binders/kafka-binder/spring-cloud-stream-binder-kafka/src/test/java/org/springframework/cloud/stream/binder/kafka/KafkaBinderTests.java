@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2023 the original author or authors.
+ * Copyright 2016-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,6 +36,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -52,7 +53,6 @@ import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
@@ -66,8 +66,6 @@ import org.apache.kafka.common.record.TimestampType;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.Deserializer;
-import org.apache.kafka.common.serialization.LongDeserializer;
-import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.assertj.core.api.Assertions;
 import org.assertj.core.api.Condition;
@@ -79,6 +77,7 @@ import org.junit.jupiter.api.TestInfo;
 import org.mockito.ArgumentMatchers;
 
 import org.springframework.beans.DirectFieldAccessor;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.cloud.stream.binder.Binder;
 import org.springframework.cloud.stream.binder.BinderException;
 import org.springframework.cloud.stream.binder.BinderHeaders;
@@ -159,7 +158,6 @@ import org.springframework.util.MimeTypeUtils;
 import org.springframework.util.ReflectionUtils;
 import org.springframework.util.backoff.FixedBackOff;
 
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.entry;
@@ -175,7 +173,8 @@ import static org.mockito.Mockito.verify;
  * @author Henryk Konsek
  * @author Gary Russell
  * @author Chris Bono
- * @Author Oliver Führer
+ * @author Oliver Führer
+ * @author Didier Loiseau
  */
 @EmbeddedKafka(count = 1, controlledShutdown = true, topics = "error.pollableDlq.group-pcWithDlq", brokerProperties = {"transaction.state.log.replication.factor=1",
 		"transaction.state.log.min.isr=1"})
@@ -267,9 +266,10 @@ class KafkaBinderTests extends
 				provisioningProvider, dlqPartitionFunction, dlqDestinationResolver);
 	}
 
+	@SuppressWarnings("unchecked")
 	private KafkaBinderConfigurationProperties createConfigurationProperties() {
 		var binderConfiguration = new KafkaBinderConfigurationProperties(
-				new TestKafkaProperties());
+				new TestKafkaProperties(), mock(ObjectProvider.class));
 		binderConfiguration.setBrokers(embeddedKafka.getBrokersAsString());
 		return binderConfiguration;
 	}
@@ -1055,8 +1055,38 @@ class KafkaBinderTests extends
 	}
 
 	@Test
+	void dlqAndRetryWithNonRetryableException() throws Exception {
+		testDlqGuts(true, null, null, false, false, true, true);
+	}
+
+	@Test
+	void dlqAndRetryDefaultFalse() throws Exception {
+		testDlqGuts(true, null, null, false, false, false, false);
+	}
+
+	@Test
+	void dlqAndRetryDefaultFalseWithRetryableException() throws Exception {
+		testDlqGuts(true, null, null, false, false, false, true);
+	}
+
+	@Test
 	void dlqAndRetryTransactional() throws Exception {
 		testDlqGuts(true, null, null, true, false);
+	}
+
+	@Test
+	void dlqAndRetryWithNonRetryableExceptionTransactional() throws Exception {
+		testDlqGuts(true, null, null, true, false, true, true);
+	}
+
+	@Test
+	void dlqAndRetryDefaultFalseTransactional() throws Exception {
+		testDlqGuts(true, null, null, true, false, false, false);
+	}
+
+	@Test
+	void dlqAndRetryDefaultFalseWithRetryableExceptionTransactional() throws Exception {
+		testDlqGuts(true, null, null, true, false, false, true);
 	}
 
 	@Test
@@ -1086,6 +1116,14 @@ class KafkaBinderTests extends
 
 	private void testDlqGuts(boolean withRetry, HeaderMode headerMode, Integer dlqPartitions,
 			boolean transactional, boolean useDlqDestResolver) throws Exception {
+		testDlqGuts(withRetry, headerMode, dlqPartitions, transactional,
+				useDlqDestResolver, true, false);
+	}
+
+	private void testDlqGuts(boolean withRetry, HeaderMode headerMode,
+			Integer dlqPartitions, boolean transactional, boolean useDlqDestResolver,
+			boolean defaultRetryable, boolean useConfiguredRetryableException)
+			throws Exception {
 
 		int expectedDlqPartition = dlqPartitions == null ? 0 : dlqPartitions - 1;
 		KafkaBinderConfigurationProperties binderConfig = createConfigurationProperties();
@@ -1130,12 +1168,18 @@ class KafkaBinderTests extends
 		consumerProperties.getExtension().setDlqPartitions(dlqPartitions);
 		consumerProperties.setConcurrency(2);
 		consumerProperties.populateBindingName("foobar");
+		consumerProperties.setDefaultRetryable(defaultRetryable);
+		consumerProperties.getRetryableExceptions().put(NumberFormatException.class,
+				!defaultRetryable);
 
 		DirectChannel moduleInputChannel = createBindableChannel("input",
 				createConsumerBindingProperties(consumerProperties));
 
 		var dlqChannel = new QueueChannel();
-		var handler = new FailingInvocationCountingMessageHandler();
+		var handler = new FailingInvocationCountingMessageHandler(
+				() -> useConfiguredRetryableException
+						? new NumberFormatException("fail")
+						: new RuntimeException("fail"));
 		moduleInputChannel.subscribe(handler);
 
 		long uniqueBindingId = System.currentTimeMillis();
@@ -1255,8 +1299,10 @@ class KafkaBinderTests extends
 					.get(KafkaHeaders.RECEIVED_PARTITION)).isEqualTo(expectedDlqPartition);
 		}
 		else if (!HeaderMode.none.equals(headerMode)) {
+			boolean shouldHaveRetried = defaultRetryable != useConfiguredRetryableException;
 			assertThat(handler.getInvocationCount())
-					.isEqualTo(consumerProperties.getMaxAttempts());
+					.isEqualTo(
+							shouldHaveRetried ? consumerProperties.getMaxAttempts() : 1);
 
 			assertThat(receivedMessage.getHeaders()
 					.get(KafkaMessageChannelBinder.X_ORIGINAL_TOPIC))
@@ -1517,7 +1563,6 @@ class KafkaBinderTests extends
 		consumerProperties.setBackOffMaxInterval(150);
 		//When auto commit is disabled, then the record is committed after publishing to DLQ using the manual acknowledgement.
 		// (if DLQ is enabled, which is, in this case).
-		consumerProperties.getExtension().setAutoCommitOffset(false);
 		consumerProperties.getExtension().setEnableDlq(true);
 
 		DirectChannel moduleInputChannel = createBindableChannel("input",
@@ -3172,7 +3217,7 @@ class KafkaBinderTests extends
 	}
 
 	@Test
-	@SuppressWarnings("unchecked")
+	@SuppressWarnings({"unchecked", "rawtypes"})
 	void consumerDefaultDeserializer() throws Throwable {
 		Binding<?> binding = null;
 		try {
@@ -3188,13 +3233,21 @@ class KafkaBinderTests extends
 
 			binding = binder.bindConsumer(testTopicName, "test", input,
 					consumerProperties);
-			var consumerAccessor = new DirectFieldAccessor(
-					getKafkaConsumer(binding));
-			assertThat(consumerAccessor
-					.getPropertyValue("keyDeserializer") instanceof ByteArrayDeserializer)
-							.isTrue();
-			assertThat(consumerAccessor.getPropertyValue(
-					"valueDeserializer") instanceof ByteArrayDeserializer).isTrue();
+			var bindingAccessor = new DirectFieldAccessor(binding);
+			KafkaMessageDrivenChannelAdapter adapter = (KafkaMessageDrivenChannelAdapter) bindingAccessor
+				.getPropertyValue("lifecycle");
+			var adapterAccessor = new DirectFieldAccessor(adapter);
+			ConcurrentMessageListenerContainer messageListenerContainer = (ConcurrentMessageListenerContainer) adapterAccessor
+				.getPropertyValue("messageListenerContainer");
+			var containerAccessor = new DirectFieldAccessor(
+				messageListenerContainer);
+			DefaultKafkaConsumerFactory consumerFactory = (DefaultKafkaConsumerFactory) containerAccessor
+				.getPropertyValue("consumerFactory");
+
+			Map<String, Object> configProps = consumerFactory.getConfigurationProperties();
+
+			assertThat(configProps.get("key.deserializer")).isEqualTo(org.apache.kafka.common.serialization.ByteArrayDeserializer.class);
+			assertThat(configProps.get("value.deserializer")).isEqualTo(org.apache.kafka.common.serialization.ByteArrayDeserializer.class);
 		}
 		finally {
 			if (binding != null) {
@@ -3204,7 +3257,7 @@ class KafkaBinderTests extends
 	}
 
 	@Test
-	@SuppressWarnings("unchecked")
+	@SuppressWarnings({"unchecked", "rawtypes"})
 	void consumerCustomDeserializer() throws Exception {
 		Binding<?> binding = null;
 		try {
@@ -3226,14 +3279,23 @@ class KafkaBinderTests extends
 
 			binding = binder.bindConsumer(testTopicName, "test", input,
 					consumerProperties);
-			var consumerAccessor = new DirectFieldAccessor(
-					getKafkaConsumer(binding));
-			assertThat(consumerAccessor
-					.getPropertyValue("keyDeserializer") instanceof StringDeserializer)
-							.isTrue();
-			assertThat(consumerAccessor
-					.getPropertyValue("valueDeserializer") instanceof LongDeserializer)
-							.isTrue();
+
+			var bindingAccessor = new DirectFieldAccessor(binding);
+			KafkaMessageDrivenChannelAdapter adapter = (KafkaMessageDrivenChannelAdapter) bindingAccessor
+				.getPropertyValue("lifecycle");
+			var adapterAccessor = new DirectFieldAccessor(adapter);
+			ConcurrentMessageListenerContainer messageListenerContainer = (ConcurrentMessageListenerContainer) adapterAccessor
+				.getPropertyValue("messageListenerContainer");
+			var containerAccessor = new DirectFieldAccessor(
+				messageListenerContainer);
+			DefaultKafkaConsumerFactory consumerFactory = (DefaultKafkaConsumerFactory) containerAccessor
+				.getPropertyValue("consumerFactory");
+
+			Map<String, Object> configProps = consumerFactory.getConfigurationProperties();
+
+			assertThat(configProps.get("key.deserializer")).isEqualTo("org.apache.kafka.common.serialization.StringDeserializer");
+			assertThat(configProps.get("value.deserializer")).isEqualTo("org.apache.kafka.common.serialization.LongDeserializer");
+
 		}
 		finally {
 			if (binding != null) {
@@ -3289,20 +3351,6 @@ class KafkaBinderTests extends
 				consumerBinding.unbind();
 			}
 		}
-	}
-
-	private KafkaConsumer getKafkaConsumer(Binding binding) {
-		var bindingAccessor = new DirectFieldAccessor(binding);
-		KafkaMessageDrivenChannelAdapter adapter = (KafkaMessageDrivenChannelAdapter) bindingAccessor
-				.getPropertyValue("lifecycle");
-		var adapterAccessor = new DirectFieldAccessor(adapter);
-		ConcurrentMessageListenerContainer messageListenerContainer = (ConcurrentMessageListenerContainer) adapterAccessor
-				.getPropertyValue("messageListenerContainer");
-		var containerAccessor = new DirectFieldAccessor(
-				messageListenerContainer);
-		DefaultKafkaConsumerFactory consumerFactory = (DefaultKafkaConsumerFactory) containerAccessor
-				.getPropertyValue("consumerFactory");
-		return (KafkaConsumer) consumerFactory.createConsumer();
 	}
 
 	@Test
@@ -4090,14 +4138,27 @@ class KafkaBinderTests extends
 	private final class FailingInvocationCountingMessageHandler
 			implements MessageHandler {
 
+		private final Supplier<? extends RuntimeException> exceptionProvider;
+
 		private volatile int invocationCount;
 
 		private final LinkedHashMap<Long, Message<?>> receivedMessages = new LinkedHashMap<>();
 
 		private final CountDownLatch latch;
 
-		private FailingInvocationCountingMessageHandler(int latchSize) {
+		private FailingInvocationCountingMessageHandler(int latchSize,
+				Supplier<? extends RuntimeException> exceptionProvider) {
 			latch = new CountDownLatch(latchSize);
+			this.exceptionProvider = exceptionProvider;
+		}
+
+		private FailingInvocationCountingMessageHandler(
+				Supplier<? extends RuntimeException> exceptionProvider) {
+			this(1, exceptionProvider);
+		}
+
+		private FailingInvocationCountingMessageHandler(int latchSize) {
+			this(latchSize, () -> new RuntimeException("fail"));
 		}
 
 		private FailingInvocationCountingMessageHandler() {
@@ -4115,7 +4176,7 @@ class KafkaBinderTests extends
 				receivedMessages.put(offset, message);
 				latch.countDown();
 			}
-			throw new RuntimeException("fail");
+			throw exceptionProvider.get();
 		}
 
 		public LinkedHashMap<Long, Message<?>> getReceivedMessages() {

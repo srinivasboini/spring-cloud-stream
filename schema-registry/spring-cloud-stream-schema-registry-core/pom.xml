@@ -6,7 +6,7 @@
     <parent>
         <artifactId>spring-cloud-stream-schema-registry</artifactId>
         <groupId>org.springframework.cloud</groupId>
-        <version>4.1.1-SNAPSHOT</version>
+        <version>4.3.0-SNAPSHOT</version>
     </parent>
 
     <dependencies>
@@ -36,6 +36,12 @@
             <artifactId>spring-boot-configuration-processor</artifactId>
             <optional>true</optional>
         </dependency>
+		<dependency>
+			<groupId>com.fasterxml.jackson.core</groupId>
+			<artifactId>jackson-databind</artifactId>
+			<!--TODO: investigate why we need this hard version here and not inheriting from Spring Boot-->
+			<version>2.15.3</version>
+		</dependency>
     </dependencies>
 
 </project>

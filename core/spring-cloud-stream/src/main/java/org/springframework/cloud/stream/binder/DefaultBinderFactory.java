@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2023 the original author or authors.
+ * Copyright 2015-2025 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,10 +26,13 @@ import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
 
 import org.apache.commons.logging.Log;
@@ -45,6 +48,7 @@ import org.springframework.context.ApplicationContextInitializer;
 import org.springframework.context.ApplicationEvent;
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.core.convert.converter.Converter;
@@ -76,7 +80,7 @@ import org.springframework.util.StringUtils;
  * @author Byungjun You
  * @author Omer Celik
  */
-public class DefaultBinderFactory implements BinderFactory, DisposableBean, ApplicationContextAware {
+public class DefaultBinderFactory implements BinderFactory, DisposableBean, ApplicationContextAware, SmartLifecycle {
 
 	protected final Log logger = LogFactory.getLog(getClass());
 
@@ -92,11 +96,15 @@ public class DefaultBinderFactory implements BinderFactory, DisposableBean, Appl
 
 	private final BinderCustomizer binderCustomizer;
 
+	private final AtomicBoolean running = new AtomicBoolean();
+
 	private volatile ConfigurableApplicationContext context;
 
 	private Collection<Listener> listeners;
 
 	private volatile String defaultBinder;
+
+	private static final ReentrantLock lock = new ReentrantLock();
 
 	public DefaultBinderFactory(Map<String, BinderConfiguration> binderConfigurations,
 								BinderTypeRegistry binderTypeRegistry, BinderCustomizer binderCustomizer) {
@@ -140,36 +148,62 @@ public class DefaultBinderFactory implements BinderFactory, DisposableBean, Appl
 		this.defaultBinderForBindingTargetType.clear();
 	}
 
+	@Override
+	public void start() {
+		// This is essentially used when CRaC checkpoint is restored
+		if (this.running.compareAndSet(false, true)) {
+			this.binderInstanceCache.values().stream().map(Entry::getValue).forEach(ConfigurableApplicationContext::start);
+		}
+	}
+
+	@Override
+	public void stop() {
+		// Makes sense for CRaC checkpoint
+		if (this.running.compareAndSet(true, false)) {
+			this.binderInstanceCache.values().stream().map(Entry::getValue).forEach(ConfigurableApplicationContext::stop);
+		}
+	}
+
+	@Override
+	public boolean isRunning() {
+		return this.running.get();
+	}
+
 	@SuppressWarnings({ "unchecked", "rawtypes" })
 	@Override
+	public <T> Binder<T, ?, ?> getBinder(String name, Class<? extends T> bindingTargetType) {
+		lock.lock();
+		try {
+			String binderName = StringUtils.hasText(name) ? name : this.defaultBinder;
 
-	public synchronized <T> Binder<T, ?, ?> getBinder(String name, Class<? extends T> bindingTargetType) {
-		String binderName = StringUtils.hasText(name) ? name : this.defaultBinder;
-
-		Map<String, Binder> binders = this.context == null ? Collections.emptyMap() : this.context.getBeansOfType(Binder.class);
-		Binder<T, ConsumerProperties, ProducerProperties> binder;
-		if (StringUtils.hasText(binderName) && binders.containsKey(binderName)) {
-			binder = (Binder<T, ConsumerProperties, ProducerProperties>) this.context.getBean(binderName);
-		}
-		else if (binders.size() == 1) {
-			binder = binders.values().iterator().next();
-		}
-		else if (binders.size() > 1) {
-			throw new IllegalStateException(
+			Map<String, Binder> binders = this.context == null ? Collections.emptyMap() : this.context.getBeansOfType(Binder.class);
+			Binder<T, ConsumerProperties, ProducerProperties> binder;
+			if (StringUtils.hasText(binderName) && binders.containsKey(binderName)) {
+				binder = (Binder<T, ConsumerProperties, ProducerProperties>) this.context.getBean(binderName);
+			}
+			else if (binders.size() == 1) {
+				binder = binders.values().iterator().next();
+			}
+			else if (binders.size() > 1) {
+				throw new IllegalStateException(
 					"Multiple binders are available, however neither default nor "
-							+ "per-destination binder name is provided. Available binders are "
-							+ binders.keySet());
+						+ "per-destination binder name is provided. Available binders are "
+						+ binders.keySet());
+			}
+			else {
+				/*
+				 * This is the fallback to the old bootstrap that relies on spring.binders.
+				 */
+				binder = this.doGetBinder(binderName, bindingTargetType);
+			}
+			if (this.binderCustomizer != null) {
+				this.binderCustomizer.customize(binder, binderName);
+			}
+			return binder;
 		}
-		else {
-			/*
-			 * This is the fallback to the old bootstrap that relies on spring.binders.
-			 */
-			binder = this.doGetBinder(binderName, bindingTargetType);
+		finally {
+			lock.unlock();
 		}
-		if (this.binderCustomizer != null) {
-			this.binderCustomizer.customize(binder, binderName);
-		}
-		return binder;
 	}
 
 	private <T> Binder<T, ConsumerProperties, ProducerProperties> doGetBinder(String name, Class<? extends T> bindingTargetType) {
@@ -212,7 +246,7 @@ public class DefaultBinderFactory implements BinderFactory, DisposableBean, Appl
 	}
 
 	private <T> String getKafkaStreamsBinderSimpleName(Class<? extends T> bindingTargetType) {
-		return bindingTargetType.getSimpleName().toLowerCase();
+		return bindingTargetType.getSimpleName().toLowerCase(Locale.ROOT);
 	}
 
 	private <T> boolean isKafkaStreamsType(Class<? extends T> bindingTargetType) {
@@ -225,7 +259,7 @@ public class DefaultBinderFactory implements BinderFactory, DisposableBean, Appl
 
 		if (!MessageChannel.class.isAssignableFrom(bindingTargetType)
 				&& !PollableMessageSource.class.isAssignableFrom(bindingTargetType)) {
-			String bindingTargetTypeName = StringUtils.hasText(name) ? name : bindingTargetType.getSimpleName().toLowerCase();
+			String bindingTargetTypeName = StringUtils.hasText(name) ? name : bindingTargetType.getSimpleName().toLowerCase(Locale.ROOT);
 			Binder<T, ConsumerProperties, ProducerProperties> binderInstance = getBinderInstance(bindingTargetTypeName);
 			return binderInstance;
 		}
@@ -437,23 +471,6 @@ public class DefaultBinderFactory implements BinderFactory, DisposableBean, Appl
 			binderProducingContext.getBeanFactory().setConversionService(this.context.getBeanFactory().getConversionService());
 		}
 
-		List<Class> sourceClasses = new ArrayList<>();
-		sourceClasses.addAll(Arrays.asList(binderType.getConfigurationClasses()));
-		if (binderProperties.containsKey("spring.main.sources")) {
-			String sources = (String) binderProperties.get("spring.main.sources");
-			if (StringUtils.hasText(sources)) {
-				Stream.of(sources.split(",")).forEach(source -> {
-					try {
-						sourceClasses.add(Thread.currentThread().getContextClassLoader().loadClass(source.trim()));
-					}
-					catch (Exception e) {
-						throw new IllegalStateException("Failed to load class " + source, e);
-					}
-				});
-			}
-		}
-
-		binderProducingContext.register(sourceClasses.toArray(new Class[] {}));
 		MapPropertySource binderPropertySource = new MapPropertySource(configurationName, binderProperties);
 		binderProducingContext.getEnvironment().getPropertySources().addFirst(binderPropertySource);
 		binderProducingContext.setDisplayName(configurationName + "_context");
@@ -493,11 +510,28 @@ public class DefaultBinderFactory implements BinderFactory, DisposableBean, Appl
 			}
 		}
 
+		// Register the sources classes to the specific binder context after configuring the environment property sources
+		List<Class> sourceClasses = new ArrayList<>(Arrays.asList(binderType.getConfigurationClasses()));
+		if (binderProperties.containsKey("spring.main.sources")) {
+			String sources = (String) binderProperties.get("spring.main.sources");
+			if (StringUtils.hasText(sources)) {
+				Stream.of(sources.split(",")).forEach(source -> {
+					try {
+						sourceClasses.add(Thread.currentThread().getContextClassLoader().loadClass(source.trim()));
+					}
+					catch (Exception e) {
+						throw new IllegalStateException("Failed to load class " + source, e);
+					}
+				});
+			}
+		}
+		binderProducingContext.register(sourceClasses.toArray(new Class[] {}));
+
 		if (refresh) {
-			binderProducingContext.refresh();
 			if (!useApplicationContextAsParent || "integration".equals(binderType.getDefaultName())) {
 				this.propagateSharedBeans(binderProducingContext, (GenericApplicationContext) this.context);
 			}
+			binderProducingContext.refresh();
 		}
 
 		return binderProducingContext;

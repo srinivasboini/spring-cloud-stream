@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2018 the original author or authors.
+ * Copyright 2015-2025 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,6 @@
  */
 
 package org.springframework.cloud.stream.config;
-
-import java.beans.Introspector;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -44,6 +42,7 @@ import org.springframework.integration.json.JsonPropertyAccessor;
  *
  * @author Eric Bottard
  * @author Artem Bilan
+ * @author Oleg Zhurakousky
  */
 @Configuration(proxyBeanMethods = false)
 @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
@@ -61,9 +60,7 @@ public class SpelExpressionConverterConfiguration {
 	@Bean
 	public static SpelPropertyAccessorRegistrar spelPropertyAccessorRegistrar() {
 		return new SpelPropertyAccessorRegistrar()
-				.add(Introspector
-						.decapitalize(JsonPropertyAccessor.class.getSimpleName()),
-						new JsonPropertyAccessor());
+				.add(new JsonPropertyAccessor());
 	}
 
 	@Bean
@@ -74,6 +71,8 @@ public class SpelExpressionConverterConfiguration {
 		ConfigurableConversionService cs = (ConfigurableConversionService) context.getBeanFactory().getConversionService();
 		if (cs != null) {
 			cs.addConverter(converter);
+			cs.addConverter(new NumberToStringSpelConverter());
+			cs.addConverter(new BooleanToStringSpelConverter());
 		}
 		return converter;
 	}
@@ -83,7 +82,30 @@ public class SpelExpressionConverterConfiguration {
 	 *
 	 * @author Eric Bottard
 	 */
-	public static class SpelConverter implements Converter<String, Expression> {
+	public static class SpelConverter extends AbstractSpelConverter<String> {
+		@Override
+		public Expression convert(String source) {
+			return this.doConvert(source);
+		}
+	}
+
+	public static class NumberToStringSpelConverter extends AbstractSpelConverter<Number> {
+		@Override
+		public Expression convert(Number source) {
+			String value = source.toString();
+			return this.doConvert(value);
+		}
+	}
+
+	public static class BooleanToStringSpelConverter extends AbstractSpelConverter<Boolean> {
+		@Override
+		public Expression convert(Boolean source) {
+			String value = source.toString();
+			return this.doConvert(value);
+		}
+	}
+
+	public static abstract class AbstractSpelConverter<T> implements Converter<T, Expression> {
 
 		private SpelExpressionParser parser = new SpelExpressionParser();
 
@@ -92,10 +114,9 @@ public class SpelExpressionConverterConfiguration {
 		@Lazy
 		private EvaluationContext evaluationContext;
 
-		@Override
-		public Expression convert(String source) {
+		public Expression doConvert(String source) {
 			try {
-				Expression expression = this.parser.parseExpression(source);
+				Expression expression = this.parser.parseExpression((String) source);
 				if (expression instanceof SpelExpression) {
 					((SpelExpression) expression)
 							.setEvaluationContext(this.evaluationContext);
@@ -107,7 +128,5 @@ public class SpelExpressionConverterConfiguration {
 						"Could not convert '%s' into a SpEL expression", source), e);
 			}
 		}
-
 	}
-
 }

@@ -20,16 +20,28 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.BeansException;
 import org.springframework.boot.context.properties.bind.Bindable;
 import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.context.properties.bind.PropertySourcesPlaceholdersResolver;
+import org.springframework.boot.context.properties.bind.validation.ValidationBindHandler;
+import org.springframework.boot.context.properties.source.ConfigurationPropertySource;
 import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
+import org.springframework.boot.validation.MessageInterpolatorFactory;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.support.GenericApplicationContext;
+import org.springframework.core.convert.support.GenericConversionService;
+import org.springframework.util.ClassUtils;
+import org.springframework.validation.Errors;
+import org.springframework.validation.Validator;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 /**
  * Base implementation of {@link ExtendedBindingProperties}.
  *
@@ -39,12 +51,17 @@ import org.springframework.context.support.GenericApplicationContext;
  * @author Oleg Zhurakousky
  * @since 2.1
  */
+@Validated
 public abstract class AbstractExtendedBindingProperties<C, P, T extends BinderSpecificPropertiesProvider>
 		implements ExtendedBindingProperties<C, P>, ApplicationContextAware {
+
+	static Log logger = LogFactory.getLog(AbstractExtendedBindingProperties.class);
 
 	private final Map<String, T> bindings = new HashMap<>();
 
 	private ConfigurableApplicationContext applicationContext = new GenericApplicationContext();
+
+	private volatile Binder propertiesBinder;
 
 	public void setBindings(Map<String, T> bindings) {
 		this.bindings.putAll(bindings);
@@ -68,6 +85,10 @@ public abstract class AbstractExtendedBindingProperties<C, P, T extends BinderSp
 	public void setApplicationContext(ApplicationContext applicationContext)
 			throws BeansException {
 		this.applicationContext = (ConfigurableApplicationContext) applicationContext;
+		GenericConversionService cs = (GenericConversionService) this.applicationContext.getBeanFactory().getConversionService();
+		Iterable<ConfigurationPropertySource> sources = ConfigurationPropertySources.get(this.applicationContext.getEnvironment());
+		PropertySourcesPlaceholdersResolver placeholdersResolver = new PropertySourcesPlaceholdersResolver(this.applicationContext.getEnvironment());
+		this.propertiesBinder =  new Binder(sources, placeholdersResolver, cs, null, null);
 	}
 
 	/*
@@ -83,16 +104,16 @@ public abstract class AbstractExtendedBindingProperties<C, P, T extends BinderSp
 	private void bindToDefault(String binding) {
 		T extendedBindingPropertiesTarget = (T) BeanUtils
 				.instantiateClass(this.getExtendedPropertiesEntryClass());
-		Binder binder = new Binder(
-				ConfigurationPropertySources
-						.get(this.applicationContext.getEnvironment()),
-				new PropertySourcesPlaceholdersResolver(
-						this.applicationContext.getEnvironment()),
-				this.applicationContext.getBeanFactory().getConversionService(),
-				null);
 
-		binder.bind(this.getDefaultsPrefix(),
-				Bindable.ofInstance(extendedBindingPropertiesTarget));
+		if (Jsr303Validator.isJsr303Present(this.applicationContext)) {
+			Jsr303Validator validator = new Jsr303Validator(this.applicationContext);
+			this.propertiesBinder.bind(this.getDefaultsPrefix(),
+					Bindable.ofInstance(extendedBindingPropertiesTarget), new ValidationBindHandler(validator));
+		}
+		else {
+			this.propertiesBinder.bind(this.getDefaultsPrefix(),
+					Bindable.ofInstance(extendedBindingPropertiesTarget));
+		}
 		this.bindings.put(binding, extendedBindingPropertiesTarget);
 	}
 
@@ -100,4 +121,50 @@ public abstract class AbstractExtendedBindingProperties<C, P, T extends BinderSp
 		return Collections.unmodifiableMap(this.bindings);
 	}
 
+	private class Jsr303Validator implements Validator {
+
+		private static final String[] VALIDATOR_CLASSES = { "jakarta.validation.Validator",
+				"jakarta.validation.ValidatorFactory", "jakarta.validation.bootstrap.GenericBootstrap" };
+
+		private final Delegate delegate;
+
+		Jsr303Validator(ApplicationContext applicationContext) {
+			this.delegate = new Delegate(applicationContext);
+		}
+
+		@Override
+		public boolean supports(Class<?> type) {
+			return this.delegate.supports(type);
+		}
+
+		@Override
+		public void validate(Object target, Errors errors) {
+			this.delegate.validate(target, errors);
+		}
+
+		static boolean isJsr303Present(ApplicationContext applicationContext) {
+			ClassLoader classLoader = applicationContext.getClassLoader();
+			for (String validatorClass : VALIDATOR_CLASSES) {
+				if (!ClassUtils.isPresent(validatorClass, classLoader)) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		private static class Delegate extends LocalValidatorFactoryBean {
+
+			Delegate(ApplicationContext applicationContext) {
+				setApplicationContext(applicationContext);
+				setMessageInterpolator(new MessageInterpolatorFactory(applicationContext).getObject());
+				try {
+					afterPropertiesSet();
+				}
+				catch (Exception e) {
+					logger.warn("Failed to execute afterPropertiesSet() on aplication context", e);
+				}
+			}
+
+		}
+	}
 }

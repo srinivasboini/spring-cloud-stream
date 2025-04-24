@@ -499,7 +499,7 @@ class RabbitBinderTests extends
 		properties.getExtension().setPrefix("foo.");
 		properties.getExtension().setPrefetch(20);
 		properties.getExtension().setHeaderPatterns(new String[] { "foo" });
-		properties.getExtension().setTxSize(10);
+		properties.getExtension().setBatchSize(10);
 		QuorumConfig quorum = properties.getExtension().getQuorum();
 		quorum.setEnabled(true);
 		quorum.setDeliveryLimit(10);
@@ -944,7 +944,7 @@ class RabbitBinderTests extends
 				this.rabbitTestSupport.getResource())
 						.receive("foo.props.0.prodPropsRequired-0", 10_000);
 		assertThat(received).isNotNull();
-		assertThat(received.getMessageProperties().getReceivedDelay()).isEqualTo(42);
+		assertThat(received.getMessageProperties().getReceivedDelayLong()).isEqualTo(42);
 
 		producerBinding.unbind();
 		assertThat(endpoint.isRunning()).isFalse();

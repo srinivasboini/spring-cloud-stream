@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2021 the original author or authors.
+ * Copyright 2018-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,9 @@ import java.util.Set;
 import org.apache.kafka.streams.errors.StreamsUncaughtExceptionHandler;
 
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
+import org.springframework.boot.web.context.WebServerGracefulShutdownLifecycle;
 import org.springframework.cloud.stream.binder.ConsumerProperties;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.kafka.KafkaException;
@@ -101,6 +103,9 @@ public class StreamsBuilderFactoryManager implements SmartLifecycle {
 							this.kafkaStreamsBindingInformationCatalogue.getConsumerPropertiesPerSbfb();
 					final List<ConsumerProperties> consumerProperties = bindingServicePropertiesPerSbfb.get(streamsBuilderFactoryBean);
 					final boolean autoStartupDisabledOnAtLeastOneConsumerBinding = consumerProperties.stream().anyMatch(consumerProperties1 -> !consumerProperties1.isAutoStartup());
+					if (streamsBuilderFactoryBean instanceof SmartInitializingSingleton) {
+						((SmartInitializingSingleton) streamsBuilderFactoryBean).afterSingletonsInstantiated();
+					}
 					if (!autoStartupDisabledOnAtLeastOneConsumerBinding) {
 						streamsBuilderFactoryBean.start();
 						this.kafkaStreamsRegistry.registerKafkaStreams(streamsBuilderFactoryBean);
@@ -123,7 +128,6 @@ public class StreamsBuilderFactoryManager implements SmartLifecycle {
 			try {
 				Set<StreamsBuilderFactoryBean> streamsBuilderFactoryBeans = this.kafkaStreamsBindingInformationCatalogue
 						.getStreamsBuilderFactoryBeans();
-				int n = 0;
 				for (StreamsBuilderFactoryBean streamsBuilderFactoryBean : streamsBuilderFactoryBeans) {
 					streamsBuilderFactoryBean.removeListener(this.listener);
 					streamsBuilderFactoryBean.stop();
@@ -148,7 +152,7 @@ public class StreamsBuilderFactoryManager implements SmartLifecycle {
 
 	@Override
 	public int getPhase() {
-		return Integer.MAX_VALUE - 100;
+		return WebServerGracefulShutdownLifecycle.SMART_LIFECYCLE_PHASE - 1;
 	}
 
 }

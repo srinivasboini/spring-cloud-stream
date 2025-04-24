@@ -16,7 +16,9 @@
 
 package org.springframework.cloud.stream.function;
 
+import java.util.Locale;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
 
@@ -29,8 +31,10 @@ import org.springframework.cloud.stream.binder.test.OutputDestination;
 import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.integration.support.MessageBuilder;
 import org.springframework.messaging.Message;
+import org.springframework.messaging.support.GenericMessage;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -73,6 +77,22 @@ class FunctionPostProcessingTests {
 
 			assertThat(outputDestination.receive().getPayload()).isEqualTo("HELLO".getBytes());
 			assertThat(context.getBean(SingleFunctionPostProcessingFunction.class).success).isTrue();
+		}
+	}
+
+	@Test
+	void successfulPostProcessingOfSupplierFunctionCompposition() throws Exception {
+		System.clearProperty("spring.cloud.function.definition");
+		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(
+			TestChannelBinderConfiguration.getCompleteConfiguration(SupplierPostProcessingTestConfiguration.class))
+			.web(WebApplicationType.NONE).run("--spring.jmx.enabled=false",
+					"--spring.cloud.function.definition=hello|uppercase",
+					"--spring.cloud.stream.bindings.hellouppercase-out-0.producer.poller.fixed-delay=100")) {
+			Thread.sleep(1000);
+			OutputDestination outputDestination = context.getBean(OutputDestination.class);
+
+			assertThat(outputDestination.receive(5000, "hellouppercase-out-0").getPayload()).isEqualTo("HELLO".getBytes());
+			assertThat(context.getBean(SupplierPostProcessingTestConfiguration.class).postProcessed).isTrue();
 		}
 	}
 
@@ -207,6 +227,31 @@ class FunctionPostProcessingTests {
 		}
 	}
 
+	@EnableAutoConfiguration
+	@Configuration
+	public static class SupplierPostProcessingTestConfiguration {
+
+		public static boolean postProcessed;
+
+		@Bean
+		public Supplier<Message<String>> hello() {
+			return () -> new GenericMessage<>("hello");
+		}
+
+		@Bean
+		public Function<String, String> uppercase() {
+			return new PostProcessingFunction<String, String>() {
+				public String apply(String input) {
+					return input.toUpperCase(Locale.ROOT);
+				}
+
+				public void postProcess(Message<String> result) {
+					postProcessed = true;
+				}
+			};
+		}
+	}
+
 	private static class SingleFunctionPostProcessingFunction implements PostProcessingFunction<String, String> {
 
 		private boolean success;
@@ -216,7 +261,7 @@ class FunctionPostProcessingTests {
 			if (input.equals("error")) {
 				throw new RuntimeException("intentional");
 			}
-			return input.toUpperCase();
+			return input.toUpperCase(Locale.ROOT);
 		}
 
 		@Override

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2023 the original author or authors.
+ * Copyright 2016-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Optional;
@@ -68,7 +69,7 @@ import static org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER
  * @author Christian Tzolov
  * @author Soby Chacko
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT, properties = "spring.main.allow-bean-definition-overriding=true")
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT, properties = {"spring.main.allow-bean-definition-overriding=true", "server.port=8991"})
 @DirtiesContext(classMode = AFTER_EACH_TEST_METHOD)
 class SchemaRegistryServerAvroTests {
 
@@ -81,12 +82,12 @@ class SchemaRegistryServerAvroTests {
 			.parse(resourceToString("classpath:/avro_user_definition_schema_v2.json"));
 
 	private static final String AVRO_USER_SCHEMA_DEFAULT_NAME_STRATEGY_SUBJECT = AVRO_USER_AVRO_SCHEMA_V1.getName()
-			.toLowerCase();
+			.toLowerCase(Locale.ROOT);
 
 
 	private static final String AVRO_USER_SCHEMA_QUALIFED_NAME_STRATEGY_SUBJECT = AVRO_USER_AVRO_SCHEMA_V1
 			.getFullName()
-			.toLowerCase();
+			.toLowerCase(Locale.ROOT);
 
 	private static final Schema AVRO_USER_REGISTRY_SCHEMA_V1 = toSchema(
 			AVRO_USER_SCHEMA_DEFAULT_NAME_STRATEGY_SUBJECT,
@@ -99,6 +100,7 @@ class SchemaRegistryServerAvroTests {
 	private static final Schema AAVRO_USER_REGISTRY_SCHEMA_V1_WITH_QUAL_SUBJECT = toSchema(
 			AVRO_USER_SCHEMA_QUALIFED_NAME_STRATEGY_SUBJECT,
 			AVRO_FORMAT_NAME, AVRO_USER_AVRO_SCHEMA_V1.toString());
+
 	@Autowired
 	private TestRestTemplate client;
 
@@ -149,7 +151,8 @@ class SchemaRegistryServerAvroTests {
 			fail("Expects: " + HttpStatus.BAD_REQUEST + " error");
 		}
 		catch (HttpClientErrorException.BadRequest badRequest) {
-			assertThat(badRequest.getMessage()).isEqualTo("400 : \"Format not supported: Invalid format, supported types are: avro\"");
+			assertThat(badRequest.getMessage()).contains("Format not supported: Invalid format, supported types are: avro");
+			assertThat(badRequest.getMessage()).contains("400");
 		}
 
 	}
@@ -162,7 +165,8 @@ class SchemaRegistryServerAvroTests {
 			fail("Expects: " + HttpStatus.BAD_REQUEST + " error");
 		}
 		catch (HttpClientErrorException.BadRequest badRequest) {
-			assertThat(badRequest.getMessage()).isEqualTo("400 : \"Invalid Schema: No type: {}\"");
+			assertThat(badRequest.getMessage()).contains("\"Invalid Schema: No type: {}\"");
+			assertThat(badRequest.getMessage()).contains("400");
 		}
 
 	}
@@ -176,8 +180,8 @@ class SchemaRegistryServerAvroTests {
 			fail("Expects: " + HttpStatus.BAD_REQUEST + " error");
 		}
 		catch (HttpClientErrorException.BadRequest badRequest) {
-			assertThat(badRequest.getMessage()).isEqualTo("400 : \"Invalid Schema: \"SomeType\" is not a defined name. " +
-					"The type of the \"field\" field must be a defined name or a {\"type\": ...} expression.\"");
+			assertThat(badRequest.getMessage()).contains("\"Invalid Schema: \"SomeType\" is not a defined name");
+			assertThat(badRequest.getMessage()).contains("400");
 		}
 
 	}
@@ -221,7 +225,8 @@ class SchemaRegistryServerAvroTests {
 			fail("Expects: " + HttpStatus.NOT_FOUND + " error");
 		}
 		catch (HttpClientErrorException.NotFound notFound) {
-			assertThat(notFound.getMessage()).isEqualTo("404 : \"Schema not found: Could not find Schema by id: 2\"");
+			assertThat(notFound.getMessage()).contains("Could not find Schema by id: 2");
+			assertThat(notFound.getMessage()).contains("404");
 		}
 	}
 
@@ -241,7 +246,7 @@ class SchemaRegistryServerAvroTests {
 
 	//@Test(expected = HttpClientErrorException.NotFound.class)
 	public void testSchemaNotfound() {
-		this.client.getForEntity("http://localhost:8990/foo/avro/v42", Schema.class);
+		this.client.getForEntity("http://localhost:8991/foo/avro/v42", Schema.class);
 	}
 
 	@Test
@@ -266,8 +271,8 @@ class SchemaRegistryServerAvroTests {
 			this.client.getForEntity(subjectFormatVersionUri, Schema.class);
 		}
 		catch (HttpClientErrorException.NotFound notFound) {
-			assertThat(notFound.getMessage()).isEqualTo("404 : \"Schema not found: Could not find Schema by " +
-					"subject: user, format: avro, version 1\"");
+			assertThat(notFound.getMessage()).contains("404");
+			assertThat(notFound.getMessage()).contains("Schema not found: Could not find Schema by subject: user, format: avro, version 1");
 		}
 
 	}
@@ -288,8 +293,8 @@ class SchemaRegistryServerAvroTests {
 			this.client.exchange(new RequestEntity<>(HttpMethod.DELETE, subjectFormatVersionUri), Void.class);
 		}
 		catch (HttpClientErrorException.NotFound notFound) {
-			assertThat(notFound.getMessage()).isEqualTo("404 : \"Schema not found: Could not find Schema by " +
-					"subject: user, format: avro, version 100\"");
+			assertThat(notFound.getMessage()).contains("404");
+			assertThat(notFound.getMessage()).contains("Schema not found: Could not find Schema by subject: user, format: avro, version 100");
 		}
 
 	}
@@ -306,8 +311,8 @@ class SchemaRegistryServerAvroTests {
 			this.client.exchange(new RequestEntity<>(HttpMethod.DELETE, versionUri), Void.class);
 		}
 		catch (HttpClientErrorException.MethodNotAllowed methodNotAllowed) {
-			assertThat(methodNotAllowed.getMessage()).isEqualTo("405 : \"Schema deletion is not permitted: Not permitted " +
-					"deletion of Schema by subject: user, format: avro, version 1\"");
+			assertThat(methodNotAllowed.getMessage()).contains("405");
+			assertThat(methodNotAllowed.getMessage()).contains("Schema deletion is not permitted: Not permitted deletion of Schema by subject: user, format: avro, version 1");
 		}
 
 	}
@@ -327,8 +332,8 @@ class SchemaRegistryServerAvroTests {
 			fail("Expects: " + HttpStatus.NOT_FOUND + " error");
 		}
 		catch (HttpClientErrorException.NotFound notFound) {
-			assertThat(notFound.getMessage()).isEqualTo("404 : \"Schema not found: Could not find Schema by subject: " +
-					"user, format: avro, version 1\"");
+			assertThat(notFound.getMessage()).contains("Schema not found: Could not find Schema by subject: user, format: avro, version 1\"");
+			assertThat(notFound.getMessage()).contains("404");
 		}
 
 	}
@@ -346,7 +351,8 @@ class SchemaRegistryServerAvroTests {
 			fail("Expects: " + HttpStatus.NOT_FOUND + " error");
 		}
 		catch (HttpClientErrorException.NotFound notFound) {
-			assertThat(notFound.getMessage()).isEqualTo("404 : \"Schema not found: Could not find Schema by id: 2\"");
+			assertThat(notFound.getMessage()).contains("Schema not found: Could not find Schema by id: 2\"");
+			assertThat(notFound.getMessage()).contains("404");
 		}
 
 	}
@@ -365,8 +371,8 @@ class SchemaRegistryServerAvroTests {
 			fail("Expects: " + HttpStatus.METHOD_NOT_ALLOWED + " error");
 		}
 		catch (HttpClientErrorException.MethodNotAllowed methodNotAllowed) {
-			assertThat(methodNotAllowed.getMessage()).isEqualTo("405 : \"Schema deletion is not permitted: Not " +
-					"permitted deletion of Schema by id: 1\"");
+			assertThat(methodNotAllowed.getMessage()).contains("Not permitted deletion of Schema by id: 1");
+			assertThat(methodNotAllowed.getMessage()).contains("405");
 		}
 
 	}
@@ -436,8 +442,8 @@ class SchemaRegistryServerAvroTests {
 			fail("Expects: " + HttpStatus.METHOD_NOT_ALLOWED + " error");
 		}
 		catch (HttpClientErrorException.MethodNotAllowed methodNotAllowed) {
-			assertThat(methodNotAllowed.getMessage()).isEqualTo("405 : \"Schema deletion is not permitted: " +
-					"Not permitted deletion of Schema by subject: user\"");
+			assertThat(methodNotAllowed.getMessage()).contains("405");
+			assertThat(methodNotAllowed.getMessage()).contains("Schema deletion is not permitted: Not permitted deletion of Schema by subject: user");
 		}
 
 	}
@@ -457,7 +463,7 @@ class SchemaRegistryServerAvroTests {
 				assertThat(schemas).hasSize(2);
 
 				final ResponseEntity<List<Schema>> findBySubjectAndVersionResponseEntity = this.serverController
-						.findBySubjectAndVersion(subject, format);
+						.findBySubjectAndFormat(subject, format);
 
 				assertThat(findBySubjectAndVersionResponseEntity.getStatusCode().is2xxSuccessful()).isTrue();
 

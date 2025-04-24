@@ -77,7 +77,7 @@ public class BindableFunctionProxyFactory extends BindableProxyFactory implement
 		this(functionDefinition, inputCount, outputCount, functionProperties, new SupportedBindableFeatures(), true);
 	}
 
-	BindableFunctionProxyFactory(String functionDefinition, int inputCount, int outputCount, StreamFunctionProperties functionProperties, boolean functionExist) {
+	public BindableFunctionProxyFactory(String functionDefinition, int inputCount, int outputCount, StreamFunctionProperties functionProperties, boolean functionExist) {
 		this(functionDefinition, inputCount, outputCount, functionProperties, new SupportedBindableFeatures(), functionExist);
 	}
 
@@ -94,6 +94,10 @@ public class BindableFunctionProxyFactory extends BindableProxyFactory implement
 		this.functionProperties = functionProperties;
 		this.supportedBindableFeatures = supportedBindableFeatures;
 		this.functionExist = functionExist;
+	}
+
+	public String toString() {
+		return "Bindable: " + this.functionDefinition;
 	}
 
 	@Override
@@ -125,7 +129,7 @@ public class BindableFunctionProxyFactory extends BindableProxyFactory implement
 		return true;
 	}
 
-	protected String getFunctionDefinition() {
+	public String getFunctionDefinition() {
 		return this.isFunctionExist() ? this.functionDefinition : null;
 	}
 
@@ -224,6 +228,7 @@ public class BindableFunctionProxyFactory extends BindableProxyFactory implement
 	@Override
 	public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
 		this.context = (GenericApplicationContext) applicationContext;
+		this.setBeanFactory(this.context.getBeanFactory());
 	}
 
 	public boolean isFunctionExist() {

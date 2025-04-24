@@ -1,5 +1,5 @@
 /*
- * Copyright 2022-2023 the original author or authors.
+ * Copyright 2022-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,11 @@
 
 package org.springframework.cloud.stream.binder.reactorkafka;
 
+import io.micrometer.observation.ObservationRegistry;
+
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.kafka.KafkaConnectionDetails;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -30,16 +33,19 @@ import org.springframework.cloud.stream.binder.kafka.support.ConsumerConfigCusto
 import org.springframework.cloud.stream.binder.kafka.support.ProducerConfigCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
 
 /**
  * Binder configuration for ReactorKafka.
  *
  * @author Gary Russell
  * @author Chris Bono
+ * @author Soby Chacko
  */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnMissingBean(Binder.class)
 @EnableConfigurationProperties({ KafkaProperties.class, KafkaExtendedBindingProperties.class })
+@Import({ ReactorKafkaBinderHealthIndicatorConfiguration.class })
 public class ReactorKafkaBinderConfiguration {
 
 	/**
@@ -57,28 +63,30 @@ public class ReactorKafkaBinderConfiguration {
 	@Bean
 	@ConfigurationProperties(prefix = "spring.cloud.stream.kafka.binder")
 	KafkaBinderConfigurationProperties configurationProperties(
-			KafkaProperties kafkaProperties) {
-		return new KafkaBinderConfigurationProperties(kafkaProperties);
+			KafkaProperties kafkaProperties, ObjectProvider<KafkaConnectionDetails> kafkaConnectionDetails) {
+		return new KafkaBinderConfigurationProperties(kafkaProperties, kafkaConnectionDetails);
 	}
 
 	@Bean
 	KafkaTopicProvisioner provisioningProvider(
 			KafkaBinderConfigurationProperties configurationProperties,
-			ObjectProvider<AdminClientConfigCustomizer> adminClientConfigCustomizer, KafkaProperties kafkaProperties) {
-		return new KafkaTopicProvisioner(configurationProperties,
-				kafkaProperties, adminClientConfigCustomizer.getIfUnique());
+			ObjectProvider<AdminClientConfigCustomizer> adminClientConfigCustomizer,
+			KafkaProperties kafkaProperties, ObjectProvider<KafkaConnectionDetails> kafkaConnectionDetails) {
+		return new KafkaTopicProvisioner(configurationProperties, kafkaProperties,
+				kafkaConnectionDetails.getIfAvailable(), adminClientConfigCustomizer.getIfUnique());
 	}
 
 	@Bean
 	ReactorKafkaBinder reactorKafkaBinder(KafkaBinderConfigurationProperties configurationProperties,
-			KafkaTopicProvisioner provisioningProvider,
-			KafkaExtendedBindingProperties extendedBindingProperties,
-			ObjectProvider<ConsumerConfigCustomizer> consumerConfigCustomizer,
-			ObjectProvider<ProducerConfigCustomizer> producerConfigCustomizer,
-			ObjectProvider<ReceiverOptionsCustomizer> receiverOptionsCustomizers,
-			ObjectProvider<SenderOptionsCustomizer> senderOptionsptionsCustomizers) {
-
-		ReactorKafkaBinder reactorKafkaBinder = new ReactorKafkaBinder(configurationProperties, provisioningProvider);
+										KafkaTopicProvisioner provisioningProvider,
+										KafkaExtendedBindingProperties extendedBindingProperties,
+										ObjectProvider<ConsumerConfigCustomizer> consumerConfigCustomizer,
+										ObjectProvider<ProducerConfigCustomizer> producerConfigCustomizer,
+										ObjectProvider<ReceiverOptionsCustomizer> receiverOptionsCustomizers,
+										ObjectProvider<SenderOptionsCustomizer> senderOptionsptionsCustomizers,
+										ObjectProvider<ObservationRegistry> observationRegistryObjectProvider) {
+		ReactorKafkaBinder reactorKafkaBinder = new ReactorKafkaBinder(configurationProperties, provisioningProvider,
+			observationRegistryObjectProvider.getIfUnique());
 		reactorKafkaBinder.setExtendedBindingProperties(extendedBindingProperties);
 		reactorKafkaBinder.setConsumerConfigCustomizer(consumerConfigCustomizer.getIfUnique());
 		reactorKafkaBinder.setProducerConfigCustomizer(producerConfigCustomizer.getIfUnique());

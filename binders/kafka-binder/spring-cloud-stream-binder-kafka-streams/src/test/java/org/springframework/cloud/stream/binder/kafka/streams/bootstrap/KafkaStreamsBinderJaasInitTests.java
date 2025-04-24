@@ -1,5 +1,5 @@
 /*
- * Copyright 2021-2023 the original author or authors.
+ * Copyright 2021-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,10 +28,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.boot.WebApplicationType;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.test.EmbeddedKafkaBroker;
 import org.springframework.kafka.test.condition.EmbeddedKafkaCondition;
 import org.springframework.kafka.test.context.EmbeddedKafka;
@@ -41,12 +42,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EmbeddedKafka
 class KafkaStreamsBinderJaasInitTests {
 
-	private static final EmbeddedKafkaBroker embeddedKafka = EmbeddedKafkaCondition.getBroker();
+	private static EmbeddedKafkaBroker embeddedKafka;
 
 	private static String JAVA_LOGIN_CONFIG_PARAM_VALUE;
 
 	@BeforeAll
 	public static void beforeAll() {
+		embeddedKafka = EmbeddedKafkaCondition.getBroker();
 		JAVA_LOGIN_CONFIG_PARAM_VALUE = System.getProperty(JaasUtils.JAVA_LOGIN_CONFIG_PARAM);
 		System.clearProperty(JaasUtils.JAVA_LOGIN_CONFIG_PARAM);
 	}
@@ -88,7 +90,8 @@ class KafkaStreamsBinderJaasInitTests {
 		applicationContext.close();
 	}
 
-	@SpringBootApplication
+	@EnableAutoConfiguration
+	@Configuration
 	static class KafkaStreamsBinderJaasInitTestsApplication {
 
 		@Bean

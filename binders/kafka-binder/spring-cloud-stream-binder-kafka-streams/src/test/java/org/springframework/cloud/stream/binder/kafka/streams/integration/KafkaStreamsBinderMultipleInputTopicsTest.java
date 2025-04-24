@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2023 the original author or authors.
+ * Copyright 2017-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ package org.springframework.cloud.stream.binder.kafka.streams.integration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 
@@ -55,7 +56,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * multiple kafka topics(destinations).
  *
  * See
- * {@link KafkaStreamsBinderMultipleInputTopicsTest#testKstreamWordCountWithStringInputAndPojoOuput}
+ * {@link KafkaStreamsBinderMultipleInputTopicsTest#kstreamWordCountWithStringInputAndPojoOuput()}
  * where the input topic names are specified as comma-separated String values for the
  * property spring.cloud.stream.bindings.input.destination.
  *
@@ -64,12 +65,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EmbeddedKafka(topics = "counts")
 class KafkaStreamsBinderMultipleInputTopicsTest {
 
-	private static final EmbeddedKafkaBroker embeddedKafka = EmbeddedKafkaCondition.getBroker();
+	private static EmbeddedKafkaBroker embeddedKafka;
 
 	private static Consumer<String, String> consumer;
 
 	@BeforeAll
 	public static void setUp() throws Exception {
+		embeddedKafka = EmbeddedKafkaCondition.getBroker();
 		Map<String, Object> consumerProps = KafkaTestUtils.consumerProps("group", "false",
 				embeddedKafka);
 		consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
@@ -148,7 +150,7 @@ class KafkaStreamsBinderMultipleInputTopicsTest {
 
 			return input -> input
 					.flatMapValues(
-							value -> Arrays.asList(value.toLowerCase().split("\\W+")))
+							value -> Arrays.asList(value.toLowerCase(Locale.ROOT).split("\\W+")))
 					.map((key, value) -> new KeyValue<>(value, value))
 					.groupByKey(Grouped.with(Serdes.String(), Serdes.String()))
 					.count(Materialized.as("WordCounts-tKWCWSIAP0")).toStream()

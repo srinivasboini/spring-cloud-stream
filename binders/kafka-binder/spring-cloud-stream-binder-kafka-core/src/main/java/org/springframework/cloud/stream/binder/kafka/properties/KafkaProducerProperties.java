@@ -19,9 +19,12 @@ package org.springframework.cloud.stream.binder.kafka.properties;
 import java.util.HashMap;
 import java.util.Map;
 
+import com.fasterxml.jackson.annotation.JsonGetter;
 import jakarta.validation.constraints.NotNull;
 
 import org.springframework.expression.Expression;
+
+
 
 /**
  * Extended producer properties for Kafka binder.
@@ -186,6 +189,14 @@ public class KafkaProducerProperties {
 	 */
 	public Expression getMessageKeyExpression() {
 		return this.messageKeyExpression;
+	}
+
+	@JsonGetter("messageKeyExpression")
+	public String getTheMessageKeyExpression() {
+		if (this.messageKeyExpression != null) {
+			return this.messageKeyExpression.getExpressionString();
+		}
+		return null;
 	}
 
 	public void setMessageKeyExpression(Expression messageKeyExpression) {

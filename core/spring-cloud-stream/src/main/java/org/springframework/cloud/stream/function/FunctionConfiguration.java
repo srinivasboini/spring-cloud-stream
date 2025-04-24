@@ -35,16 +35,19 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.StreamSupport;
 
+import io.micrometer.context.ContextSnapshotFactory;
+import io.micrometer.observation.ObservationRegistry;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.MonoSink;
+import reactor.util.context.ContextView;
 import reactor.util.function.Tuples;
 
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -65,7 +68,6 @@ import org.springframework.cloud.function.context.config.RoutingFunction;
 import org.springframework.cloud.function.context.message.MessageUtils;
 import org.springframework.cloud.stream.binder.BinderFactory;
 import org.springframework.cloud.stream.binder.BinderHeaders;
-import org.springframework.cloud.stream.binder.BindingCreatedEvent;
 import org.springframework.cloud.stream.binder.ConsumerProperties;
 import org.springframework.cloud.stream.binder.PartitionHandler;
 import org.springframework.cloud.stream.binder.ProducerProperties;
@@ -85,12 +87,14 @@ import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.EnvironmentAware;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.Environment;
 import org.springframework.core.type.MethodMetadata;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
+import org.springframework.integration.StaticMessageHeaderAccessor;
 import org.springframework.integration.channel.AbstractMessageChannel;
 import org.springframework.integration.channel.AbstractSubscribableChannel;
 import org.springframework.integration.channel.FluxMessageChannel;
@@ -108,6 +112,7 @@ import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageHeaders;
 import org.springframework.messaging.MessagingException;
 import org.springframework.messaging.SubscribableChannel;
+import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.Trigger;
 import org.springframework.scheduling.support.CronTrigger;
@@ -127,8 +132,11 @@ import org.springframework.util.StringUtils;
  * @author Chris Bono
  * @author Byungjun You
  * @author Ivan Shapoval
+ * @author Patrik Péter Süli
+ * @author Artem Bilan
  * @since 2.1
  */
+@Lazy(false)
 @AutoConfiguration
 @EnableConfigurationProperties(StreamFunctionConfigurationProperties.class)
 @Import({ BinderFactoryAutoConfiguration.class })
@@ -137,12 +145,18 @@ import org.springframework.util.StringUtils;
 @ConditionalOnBean(FunctionRegistry.class)
 public class FunctionConfiguration {
 
+	private static final boolean isContextPropagationPresent = ClassUtils.isPresent(
+		"io.micrometer.context.ContextSnapshot", FunctionConfiguration.class.getClassLoader());
+
+
 	@SuppressWarnings("rawtypes")
 	@Bean
 	public StreamBridge streamBridgeUtils(FunctionCatalog functionCatalog,
 			BindingServiceProperties bindingServiceProperties, ConfigurableApplicationContext applicationContext,
-			@Nullable NewDestinationBindingCallback callback) {
-		return new StreamBridge(functionCatalog, bindingServiceProperties, applicationContext, callback);
+			@Nullable NewDestinationBindingCallback callback,
+			ObjectProvider<ObservationRegistry> observationRegistries) {
+		return new StreamBridge(functionCatalog, bindingServiceProperties, applicationContext, callback,
+				observationRegistries);
 	}
 
 	@Bean
@@ -221,8 +235,6 @@ public class FunctionConfiguration {
 						functionWrapper = functionCatalog.lookup(proxyFactory.getFunctionDefinition(), contentTypes.toArray(new String[0]));
 					}
 
-					Publisher<Object> beginPublishingTrigger = setupBindingTrigger(context);
-
 					if (!functionProperties.isComposeFrom() && !functionProperties.isComposeTo()) {
 						String integrationFlowName = proxyFactory.getFunctionDefinition() + "_integrationflow";
 
@@ -235,22 +247,29 @@ public class FunctionConfiguration {
 						}
 
 						if (functionWrapper != null) {
+							FunctionInvocationWrapper postProcessor = functionWrapper;
 							IntegrationFlow integrationFlow = integrationFlowFromProvidedSupplier(new PartitionAwareFunctionWrapper(functionWrapper, context, producerProperties),
-									beginPublishingTrigger, pollable, context, taskScheduler, producerProperties, outputName)
+									pollable, context, taskScheduler, producerProperties, outputName)
+									.intercept(new ChannelInterceptor() {
+										public void postSend(Message<?> message, MessageChannel channel, boolean sent) {
+											postProcessor.postProcess();
+										}
+									})
 									.route(Message.class, message -> {
 										if (message.getHeaders().get("spring.cloud.stream.sendto.destination") != null) {
 											String destinationName = (String) message.getHeaders().get("spring.cloud.stream.sendto.destination");
 											return streamBridge.resolveDestination(destinationName, producerProperties, null);
 										}
 										return outputName;
-									}).get();
+									})
+									.get();
 							IntegrationFlow postProcessedFlow = (IntegrationFlow) context.getAutowireCapableBeanFactory()
 									.initializeBean(integrationFlow, integrationFlowName);
 							context.registerBean(integrationFlowName, IntegrationFlow.class, () -> postProcessedFlow);
 						}
 						else {
 							IntegrationFlow integrationFlow = integrationFlowFromProvidedSupplier(new PartitionAwareFunctionWrapper(supplier, context, producerProperties),
-									beginPublishingTrigger, pollable, context, taskScheduler, producerProperties, outputName)
+									pollable, context, taskScheduler, producerProperties, outputName)
 									.channel(c -> c.direct())
 									.fluxTransform((Function<? super Flux<Message<Object>>, ? extends Publisher<Object>>) function)
 									.route(Message.class, message -> {
@@ -271,26 +290,9 @@ public class FunctionConfiguration {
 		};
 	}
 
-
-	/*
-	 * Creates a publishing trigger to ensure Supplier does not begin publishing until binding is created
-	 */
-	private Publisher<Object> setupBindingTrigger(GenericApplicationContext context) {
-		AtomicReference<MonoSink<Object>> triggerRef = new AtomicReference<>();
-		Publisher<Object> beginPublishingTrigger = Mono.create(triggerRef::set);
-		context.addApplicationListener(event -> {
-			if (event instanceof BindingCreatedEvent) {
-				if (triggerRef.get() != null) {
-					triggerRef.get().success();
-				}
-			}
-		});
-		return beginPublishingTrigger;
-	}
-
 	@SuppressWarnings({ "rawtypes", "unchecked" })
 	private IntegrationFlowBuilder integrationFlowFromProvidedSupplier(Supplier<?> supplier,
-			Publisher<Object> beginPublishingTrigger, PollableBean pollable, GenericApplicationContext context,
+			PollableBean pollable, GenericApplicationContext context,
 			TaskScheduler taskScheduler, ProducerProperties producerProperties, String bindingName) {
 
 		IntegrationFlowBuilder integrationFlowBuilder;
@@ -306,8 +308,8 @@ public class FunctionConfiguration {
 		if (pollable == null && reactive) {
 			Publisher publisher = (Publisher) supplier.get();
 			publisher = publisher instanceof Mono
-					? ((Mono) publisher).delaySubscription(beginPublishingTrigger).map(this::wrapToMessageIfNecessary)
-					: ((Flux) publisher).delaySubscription(beginPublishingTrigger).map(this::wrapToMessageIfNecessary);
+					? ((Mono) publisher).map(this::wrapToMessageIfNecessary)
+					: ((Flux) publisher).map(this::wrapToMessageIfNecessary);
 
 			integrationFlowBuilder = IntegrationFlow.from(publisher);
 
@@ -372,7 +374,7 @@ public class FunctionConfiguration {
 			Object source = bd.getSource();
 			if (source instanceof MethodMetadata methodMetadata) {
 				Class<?> factory = ClassUtils.resolveClassName(methodMetadata.getDeclaringClassName(), null);
-				Class<?>[] params = FunctionContextUtils.getParamTypesFromBeanDefinitionFactory(factory, (RootBeanDefinition) bd);
+				Class<?>[] params = FunctionContextUtils.getParamTypesFromBeanDefinitionFactory(factory, (RootBeanDefinition) bd, methodMetadata.getMethodName());
 				factoryMethod = ReflectionUtils.findMethod(factory, methodMetadata.getMethodName(), params);
 			}
 		}
@@ -391,17 +393,13 @@ public class FunctionConfiguration {
 						: MessageBuilder.withPayload(value).build();
 	}
 
-	@SuppressWarnings({ "unchecked", "rawtypes" })
-	private static Message sanitize(Message inputMessage) {
-		MessageBuilder builder = MessageBuilder
-				.fromMessage(inputMessage)
-				.removeHeader("spring.cloud.stream.sendto.destination")
-				.removeHeader(MessageUtils.SOURCE_TYPE);
-		if (builder.getHeaders().containsKey(MessageUtils.TARGET_PROTOCOL)) {
-			builder = builder.setHeader(MessageUtils.SOURCE_TYPE, builder.getHeaders().get(MessageUtils.TARGET_PROTOCOL));
-		}
-		builder = builder.removeHeader(MessageUtils.TARGET_PROTOCOL);
-		return builder.build();
+	private static <P> Message<P> sanitize(Message<P> inputMessage) {
+		return MessageBuilder
+			.fromMessage(inputMessage)
+			.removeHeader("spring.cloud.stream.sendto.destination")
+			.setHeader(MessageUtils.SOURCE_TYPE, inputMessage.getHeaders().get(MessageUtils.TARGET_PROTOCOL))
+			.removeHeader(MessageUtils.TARGET_PROTOCOL)
+			.build();
 	}
 
 	private static class FunctionToDestinationBinder implements InitializingBean, ApplicationContextAware {
@@ -590,7 +588,19 @@ public class FunctionConfiguration {
 								if (!(message instanceof Message)) {
 									message = MessageBuilder.withPayload(message).build();
 								}
-								outputChannel.send((Message) message);
+								if (isContextPropagationPresent && outputChannel instanceof FluxMessageChannel) {
+									ContextView reactorContext = StaticMessageHeaderAccessor.getReactorContext((Message) message);
+									try (AutoCloseable autoCloseable = ContextSnapshotHelper.setContext(reactorContext)) {
+										outputChannel.send((Message) message);
+									}
+									catch (Exception e) {
+
+									}
+								}
+								else {
+									outputChannel.send((Message) message);
+								}
+
 							}
 						})
 						.doOnError(e -> {
@@ -809,21 +819,29 @@ public class FunctionConfiguration {
 		@Override
 		public Object apply(Message<byte[]> message) {
 			message = sanitize(message);
+			setHeadersIfNeeded(message);
+			Object result = function.apply(message);
+			if (result instanceof Publisher && this.isRoutingFunction) {
+				throw new IllegalStateException("Routing to functions that return Publisher "
+						+ "is not supported in the context of Spring Cloud Stream.");
+			}
+			if (result instanceof Message<?> resultMessage) {
+				setHeadersIfNeeded(resultMessage);
+			}
+			return result;
+		}
+
+		private void setHeadersIfNeeded(Message message) {
 			Map<String, Object> headersMap = (Map<String, Object>) ReflectionUtils
-					.getField(this.headersField, message.getHeaders());
+				.getField(this.headersField, message.getHeaders());
 			if (StringUtils.hasText(targetProtocol)) {
 				headersMap.putIfAbsent(MessageUtils.TARGET_PROTOCOL, targetProtocol);
 			}
 			if (CloudEventMessageUtils.isCloudEvent(message)) {
 				headersMap.putIfAbsent(MessageUtils.MESSAGE_TYPE, CloudEventMessageUtils.CLOUDEVENT_VALUE);
 			}
-			Object result = function.apply(message);
-			if (result instanceof Publisher && this.isRoutingFunction) {
-				throw new IllegalStateException("Routing to functions that return Publisher "
-						+ "is not supported in the context of Spring Cloud Stream.");
-			}
-			return result;
 		}
+
 	}
 
 	/**
@@ -913,9 +931,8 @@ public class FunctionConfiguration {
 			String[] inputBindings = StringUtils.hasText(bindingProperties.getInputBindings())
 					? bindingProperties.getInputBindings().split(";") : new String[0];
 
-			String[] outputBindings = StringUtils.hasText(bindingProperties.getOutputBindings()) ? bindingProperties.getOutputBindings().split(";") : (
-					StringUtils.hasText(bindingProperties.getOutputBindings()) ? bindingProperties.getOutputBindings().split(";") : new String[0]
-					);
+			String[] outputBindings = StringUtils.hasText(bindingProperties.getOutputBindings())
+					? bindingProperties.getOutputBindings().split(";") : new String[0];
 
 			for (String inputBindingName : inputBindings) {
 				FunctionInvocationWrapper sourceFunc = functionCatalog.lookup(inputBindingName);
@@ -1036,4 +1053,15 @@ public class FunctionConfiguration {
 		}
 
 	}
+
+	private static final class ContextSnapshotHelper {
+
+		private static final ContextSnapshotFactory CONTEXT_SNAPSHOT_FACTORY = ContextSnapshotFactory.builder().build();
+
+		static AutoCloseable setContext(ContextView context) {
+			return CONTEXT_SNAPSHOT_FACTORY.setThreadLocalsFrom(context);
+		}
+
+	}
+
 }

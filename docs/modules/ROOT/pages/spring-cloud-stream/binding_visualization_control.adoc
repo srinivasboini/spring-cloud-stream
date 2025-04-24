@@ -23,6 +23,35 @@ bindingsController.changeState("echo-in-0", State.STOPPED);
 assertThat(binding.isRunning()).isFalse();
 ----
 
+=== Define new and manage existing bindings
+
+Additionally, starting version 4.2 using `BindingsLifecycleController` you can define new bindings as well as modify existing bindings configuration by accessing 
+its Consumer and Producer configuration properties for more dynamic management of its values. 
+
+For example.
+
+To define new input binding you can call `BindingsLifecycleController.defineInputBinding(..)` method (see below). There is equivalent of `defineOutputBinding(..)` method.
+
+[source,java]
+----
+BindingsLifecycleController controller = context.getBean(BindingsLifecycleController.class);
+KafkaConsumerProperties consumerProperties = controller.defineInputBinding("test-input-binding"); 
+----
+
+You can than manage its properties by calling `getExtensionProperties(..)` method.
+
+[source,java]
+----
+KafkaConsumerProperties properties = controller.getExtensionProperties("test-input-binding”);
+
+----
+
+NOTE: Unlike binding names derived from function definition, explicitly defined bindings do not carry the `in-0/out-0` suffix since they are not backed by an actual function. 
+
+The `getExtensionProperties(..)` operation is defined to ensure you get the proper type of the configuration properties class, so depending on the binder and binding used you can safely cast your extension properties to appropriate type. In our case it is `KafkaConsumerProperties` properties. 
+
+NOTE: Depending on the type of property you change, you may need to re-start the binding for it to take effect (ass seen earlier)
+
 [[actuator]]
 == Actuator
 Since actuator and web are optional, you must first add one of the web dependencies as well as add the actuator dependency manually.
@@ -81,4 +110,25 @@ You can also stop, start, pause, and resume individual bindings by posting to th
 
 NOTE: `PAUSED` and `RESUMED` work only when the corresponding binder and its underlying technology supports it. Otherwise, you see the warning message in the logs.
 Currently, only Kafka and [Solace](https://github.com/SolaceProducts/solace-spring-cloud/tree/master/solace-spring-cloud-starters/solace-spring-cloud-stream-starter#consumer-bindings-pauseresume) binders supports the `PAUSED` and `RESUMED` states.
+
+[[sanitize-sensitive-data]]
+=== Sanitize Sensitive Data
+
+When using the binding actuator endpoint, it is sometimes critical to sanitize any sensitive data such as user credentials, information about SSL keys, etc.
+To achieve this, end user applications can provide a `SanitizingFunction` from Spring Boot as a bean in the application.
+Here is an example to scramble the data when providing a value for Apache Kafka's `sasl.jaas.config` property.
+
+```
+@Bean
+public SanitizingFunction sanitizingFunction() {
+	return sanitizableData -> {
+		if (sanitizableData.getKey().equals("sasl.jaas.config")) {
+			return sanitizableData.withValue("data-scrambled!!");
+		}
+		else {
+			return sanitizableData;
+		}
+	};
+}
+```
 

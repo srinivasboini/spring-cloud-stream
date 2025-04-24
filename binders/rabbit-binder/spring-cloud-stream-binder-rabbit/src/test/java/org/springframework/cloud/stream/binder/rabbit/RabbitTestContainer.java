@@ -1,5 +1,5 @@
 /*
- * Copyright 2022-2022 the original author or authors.
+ * Copyright 2022-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,8 +24,9 @@ import org.testcontainers.containers.RabbitMQContainer;
  * Provides a static {@link RabbitMQContainer} that can be shared across test classes.
  *
  * @author Chris Bono
+ * @author Omer Celik
  */
-public class RabbitTestContainer {
+public final class RabbitTestContainer {
 
 	private static final RabbitMQContainer RABBITMQ;
 	static {
@@ -42,6 +43,9 @@ public class RabbitTestContainer {
 		RABBITMQ.start();
 	}
 
+	private RabbitTestContainer() {
+
+	}
 	/**
 	 * Should be called early by test that wants to ensure a shared {@link RabbitMQContainer} is up and running.
 	 */

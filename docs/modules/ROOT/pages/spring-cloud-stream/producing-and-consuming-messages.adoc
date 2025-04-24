@@ -13,7 +13,7 @@ we recommend using functional implementations.
 [[overview]]
 === Overview
 
-Since Spring Cloud Stream v2.1, another alternative for defining _stream handlers_ and _sources_ is to use build-in
+Since Spring Cloud Stream v2.1, another alternative for defining _stream handlers_ and _sources_ is to use built-in
 support for https://cloud.spring.io/spring-cloud-function/[Spring Cloud Function] where they can be expressed as beans of
  type `java.util.function.[Supplier/Function/Consumer]`.
 
@@ -48,7 +48,7 @@ public class MyFunctionBootApp {
 In the preceding example, we define a bean of type `java.util.function.Function` called _toUpperCase_ to be acting as message handler
 whose 'input' and 'output' must be bound to the external destinations exposed by the provided destination binder.
 By default the 'input' and 'output' binding names will be `toUpperCase-in-0` and `toUpperCase-out-0`.
-Please see <<Functional binding names>> section for details on naming convention used to establish binding names.
+Please see xref:spring-cloud-stream/functional-binding-names.adoc#functional-binding-names[Functional Binding Names] section for details on naming convention used to establish binding names.
 
 Below are the examples of simple functional applications to support other semantics:
 
@@ -282,7 +282,7 @@ Here we autowire a `StreamBridge` bean which allows us to send data to an output
 bridging non-stream application with spring-cloud-stream. Note that preceding example does not have any
 source functions defined (e.g., Supplier bean) leaving the framework with no trigger to create source bindings in advance, which would be typical for cases where configuration contains function beans. And that is fine, since `StreamBridge` will initiate creation of output bindings (as well as
 destination auto-provisioning if necessary) for non existing bindings on the first call to its `send(..)` operation caching it for 
-subsequent reuse (see <<StreamBridge and Dynamic Destinations>> for more details). 
+subsequent reuse (see xref:spring-cloud-stream/producing-and-consuming-messages.adoc#streambridge-and-dynamic-destinations[StreamBridge and Dynamic Destinations] for more details). 
 
 However, if you want to pre-create an output binding at the initialization (startup) time you can benefit from `spring.cloud.stream.output-bindings` property where you can declare the name of your sources.
 The provided name will be used as a trigger to create a source binding.
@@ -293,11 +293,29 @@ Also, note that `streamBridge.send(..)` method takes an `Object` for data. This 
 will go through the same routine when sending output as if it was from any Function or Supplier providing the same level
 of consistency as with functions. This means the output type conversion, partitioning etc are honored as if it was from the output produced by functions.
 
+
+==== StreamBridge with async send
+
+`StreamBridge` uses sending mechanism provided by _Spring Integration_ framework which is at the core of the _Spring Cloud Stream_. By default this mechanism uses the sender’s thread. In other words, the send is blocking. While this is ok for many cases, there are cases when you want such send to be async. To do that use `setAsync(true)` method of the `StreamBridge` before invoking one of the send methods.
+
+**Observability Context propagation with asynchronous send**
+
+When using Observability support provided by the framework as well as supporting Spring frameworks, breaking thread boundaries will affect consistency of Observability context, thus your tracing history.  To avoid that all you need is to add `context-propagation` dependency form Micrometer (see below)
+
+[source, xml]
+----
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>context-propagation</artifactId>
+    <version>1.1.0</version>
+</dependency>
+----
+
 [[streambridge-and-dynamic-destinations]]
 ==== StreamBridge and Dynamic Destinations
 
 `StreamBridge` can also be used for cases when output destination(s) are not known ahead of time similar to the use cases
-described in <<Routing FROM Consumer>> section.
+described in xref:spring-cloud-stream/event-routing.adoc#routing-from-consumer[Routing FROM consumer] section.
 
 Let's look at the example
 
@@ -326,7 +344,7 @@ public class WebSourceApplication {
 As you can see the preceding example is very similar to the previous one with the exception of explicit binding instruction provided via
 `spring.cloud.stream.output-bindings` property (which is not provided).
 Here we're sending data to `myDestination` name which does not exist as a binding. Therefore such name will be treated as dynamic destination
-as described in <<Routing FROM Consumer>> section.
+as described in xref:spring-cloud-stream/event-routing.adoc#routing-from-consumer[Routing FROM consumer] section.
 
 
 In the preceding example, we are using `ApplicationRunner` as a _foreign source_ to feed the stream.
@@ -381,7 +399,7 @@ Or if you send data as a `Message`, its content type will be honored.
 
 Spring Cloud Stream supports multiple binder scenarios. For example you may be receiving data from Kafka and sending it to RabbitMQ.
 
-For more information on multiple binders scenarios, please see <<Binders>> section and specifically <<Multiple Binders on the Classpath>>
+For more information on multiple binders scenarios, please see xref:spring-cloud-stream/binders.adoc#binders[Binders] section and specifically xref:spring-cloud-stream/multiple-binders.adoc#multiple-binders[Multiple Binders on the Classpath]
 
 In the event you are planning to use StreamBridge and have more then one binder configured in your application you must also tell StreamBridge 
 which binder to use. And for that there are two more variations of `send` method:
@@ -528,7 +546,7 @@ the fact that you can compose _reactive_ and _imperative_ functions.
 
 The result of a composition is a single function which, as you may guess, could have a very long and rather cryptic name (e.g., `foo|bar|baz|xyz. . .`)
 presenting a great deal of inconvenience when it comes to other configuration properties. This is where _descriptive binding names_
-feature described in <<Functional binding names>> section can help.
+feature described in xref:spring-cloud-stream/functional-binding-names.adoc#functional-binding-names[Functional Binding Names] section can help.
 
 For example, if we want to give our `toUpperCase|wrapInQuotes` a more descriptive name we can do so
 with the following property `spring.cloud.stream.function.bindings.toUpperCase|wrapInQuotes-in-0=quotedUpperCaseInput` allowing
@@ -586,8 +604,8 @@ While trivial, this example demonstrates how one function enriches the incoming 
 so the other function - `echo` - can benefit form it. The `echo` function stays clean and focused on business logic only.
 You can also see the usage of `spring.cloud.stream.function.bindings` property to simplify composed binding name. 
 
-[[functions-with-multiple-input-and-output-arguments]]
-=== Functions with multiple input and output arguments
+
+=== Functions with multiple input and output arguments [[functions_with_multiple_input_and_output_arguments]]
 
 Starting with version 3.0 spring-cloud-stream provides support for functions that
 have multiple inputs and/or multiple outputs (return values). What does this actually mean and
@@ -615,7 +633,7 @@ spring-cloud-stream and so on.
 So to accommodate all these requirements the initial support is relying on the signature which utilizes another abstraction
 provided by _Project Reactor_ - Tuples. However, we are working on allowing a more flexible signatures.
 
-IMPORTANT: Please refer to <<Binding and Binding names>> section to understand the naming convention used to establish _binding names_
+IMPORTANT: Please refer to xref:spring-cloud-stream/binding-names.adoc#binding-names[Binding and Binding names] section to understand the naming convention used to establish _binding names_
 used by such application.
 
 Let's look at the few samples:
@@ -757,7 +775,7 @@ public void testMultipleFunctions() {
 		Message<byte[]> outputMessage = outputDestination.receive(0, "uppercase-out-0");
 		assertThat(outputMessage.getPayload()).isEqualTo("HELLO".getBytes());
 
-		outputMessage = outputDestination.receive(0, "reverse-out-1");
+		outputMessage = outputDestination.receive(0, "reverse-out-0");
 		assertThat(outputMessage.getPayload()).isEqualTo("olleH".getBytes());
 	}
 }
@@ -776,6 +794,53 @@ public Function<List<Person>, Person> findFirstPerson() {
     return persons -> persons.get(0);
 }
 ----
+
+==== Batch Type Conversion
+Similarly to type conversion for a single message consumer, batching requires every message in the batch to be converted to the requested type. For instance, in the previous example, this type is `Person`.
+
+It is also important to understand that the headers for each message in a batch are provided separately in the `MessageHeaders` of the Message representing the entire batch. These Messages and their corresponding batched headers are created by the respective binders, and their structure may differ. Therefore, you should refer to the binder documentation to understand the structure of batched headers. For Kafka and Rabbit, you can search for `amqp_batchedHeaders` and `kafka_batchConvertedHeaders`, respectively.
+
+In short, if you have a message representing a batch with 5 payloads, the same message will contain a set of headers where each header corresponds to a payload with the same index.
+
+However, what happens if a particular payload fails to convert? In a single message scenario, we simply return null and invoke your method with the unconverted message, which either results in an exception or allows you to handle the raw message, depending on your function's signature.
+
+In the case of batch processing, things are a bit more complex. Returning null for an unconverted payload effectively reduces the batch size. For example, if the original batch contained 5 messages, and 2 failed to convert, the converted batch will only contain 3 messages. This might be acceptable, but what about the corresponding batched headers? There will still be 5 headers, as they were created when the binder formed the initial batch. This discrepancy makes it difficult to correlate the headers with their corresponding payloads.
+
+To address this issue, we provide the MessageConverterHelper interface. 
+
+[source, java]
+----
+public interface MessageConverterHelper {
+
+	/**
+	 * This method will be called by the framework in cases when a message failed to convert.
+	 * It allows you to signal to the framework if such failure should be considered fatal or not.
+	 *
+	 * @param message failed message
+	 * @return true if conversion failure must be considered fatal.
+	 */
+	default boolean shouldFailIfCantConvert(Message<?> message) {
+		return false;
+	}
+
+	/**
+	 * This method will be called by the framework in cases when a single message within batch of messages failed to convert.
+	 * It provides a place for providing post-processing logic before message converter returns.
+	 *
+	 * @param message failed message.
+	 * @param index index of failed message within the batch
+	 */
+	default void postProcessBatchMessageOnFailure(Message<?> message, int index) {
+	}
+}
+----
+
+If implemented, this interface is called by the framework’s message converter logic to perform post-processing on the batched message when a particular payload cannot be converted.
+
+The default implementations for Kafka and Rabbit automatically remove the corresponding batch headers to maintain the correlation between batched payloads and their headers. However, you can provide your own implementation and register it as a bean if you need to add custom behavior for such cases.
+
+Additionally, the interface offers a method that allows for more deterministic handling of conversion failures. By default, this method returns `false`, but you can customize the implementation if you prefer to fail the entire process when a conversion error occurs.
+
 
 [[batch-producers]]
 === Batch Producers
@@ -823,9 +888,11 @@ public class FunctionSampleSpringIntegrationApplication {
 
 	@Bean
 	public IntegrationFlow uppercaseFlow() {
-		return IntegrationFlows.from(MessageFunction.class, "uppercase")
+		return IntegrationFlow.from(MessageFunction.class, spec -> spec.beanName("uppercase"))
 				.<String, String>transform(String::toUpperCase)
-				.logAndReply(LoggingHandler.Level.WARN);
+				.log(LoggingHandler.Level.WARN)
+				.bridge()
+				.get();
 	}
 
 	public interface MessageFunction extends Function<Message<String>, Message<String>> {
@@ -837,7 +904,7 @@ public class FunctionSampleSpringIntegrationApplication {
 For those who are familiar with SI you can see we define a bean of type `IntegrationFlow` where we
 declare an integration flow that we want to expose as a `Function<String, String>` (using SI DSL) called `uppercase`.
 The `MessageFunction` interface lets us explicitly declare the type of the inputs and outputs for proper type conversion.
-See <<Content Type Negotiation>> section for more on type conversion.
+See xref:spring-cloud-stream/content-type.adoc[Content Type Negotiation] section for more on type conversion.
 
 To receive raw input you can use `from(Function.class, ...)`.
 

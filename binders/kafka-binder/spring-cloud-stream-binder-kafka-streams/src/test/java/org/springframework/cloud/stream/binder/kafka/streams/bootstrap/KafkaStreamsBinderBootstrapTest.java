@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2023 the original author or authors.
+ * Copyright 2018-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,11 +33,12 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import org.springframework.boot.WebApplicationType;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.cloud.stream.binder.kafka.streams.KeyValueSerdeResolver;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.StreamsBuilderFactoryBean;
 import org.springframework.kafka.test.EmbeddedKafkaBroker;
 import org.springframework.kafka.test.condition.EmbeddedKafkaCondition;
@@ -55,10 +56,11 @@ import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 @EmbeddedKafka
 class KafkaStreamsBinderBootstrapTest {
 
-	private static final EmbeddedKafkaBroker embeddedKafka = EmbeddedKafkaCondition.getBroker();
+	private static EmbeddedKafkaBroker embeddedKafka;
 
 	@BeforeEach
 	public void before() {
+		embeddedKafka = EmbeddedKafkaCondition.getBroker();
 		System.clearProperty(JaasUtils.JAVA_LOGIN_CONFIG_PARAM);
 	}
 
@@ -175,7 +177,8 @@ class KafkaStreamsBinderBootstrapTest {
 		return TypeFactory.defaultInstance().constructParametricType(Map.class, String.class, String.class);
 	}
 
-	@SpringBootApplication
+	@EnableAutoConfiguration
+	@Configuration
 	static class SimpleKafkaStreamsApplication extends BaseConfig {
 
 		@Bean

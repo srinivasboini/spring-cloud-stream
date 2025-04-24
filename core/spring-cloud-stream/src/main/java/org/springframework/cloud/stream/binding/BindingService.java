@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2023 the original author or authors.
+ * Copyright 2015-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -34,6 +35,7 @@ import org.springframework.aop.framework.Advised;
 import org.springframework.beans.BeanUtils;
 import org.springframework.cloud.stream.binder.Binder;
 import org.springframework.cloud.stream.binder.BinderFactory;
+import org.springframework.cloud.stream.binder.BinderWrapper;
 import org.springframework.cloud.stream.binder.Binding;
 import org.springframework.cloud.stream.binder.ConsumerProperties;
 import org.springframework.cloud.stream.binder.ExtendedConsumerProperties;
@@ -49,6 +51,9 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.validation.DataBinder;
 
+import static org.springframework.cloud.stream.utils.CacheKeyCreatorUtils.createChannelCacheKey;
+import static org.springframework.cloud.stream.utils.CacheKeyCreatorUtils.getBinderNameIfNeeded;
+
 /**
  * Handles binding of input/output targets by delegating to an underlying {@link Binder}.
  *
@@ -63,10 +68,9 @@ import org.springframework.validation.DataBinder;
  * @author Chris Bono
  * @author Artem Bilan
  * @author Byungjun You
+ * @author Omer Celik
  */
 public class BindingService {
-
-//	private final CustomValidatorBean validator;
 
 	private final Log log = LogFactory.getLog(BindingService.class);
 
@@ -91,8 +95,6 @@ public class BindingService {
 			BinderFactory binderFactory, TaskScheduler taskScheduler, ObjectMapper objectMapper) {
 		this.bindingServiceProperties = bindingServiceProperties;
 		this.binderFactory = binderFactory;
-//		this.validator = new CustomValidatorBean();
-//		this.validator.afterPropertiesSet();
 		this.taskScheduler = taskScheduler;
 		this.objectMapper = objectMapper;
 	}
@@ -268,47 +270,44 @@ public class BindingService {
 	}
 
 	@SuppressWarnings({ "unchecked", "rawtypes" })
-	public <T> Binding<T> bindProducer(T output, String outputName, boolean cache, @Nullable Binder<T, ?, ProducerProperties> binder) {
-		String bindingTarget = this.bindingServiceProperties.getBindingDestination(outputName);
-		Class<?> outputClass = output.getClass();
-		if (output instanceof Advised advisedOutput) {
-			outputClass = Stream.of(advisedOutput.getProxiedInterfaces()).filter(c -> !c.getName().contains("org.springframework")).findFirst()
-					.orElse(outputClass);
-		}
-		if (binder == null) {
-			binder = (Binder<T, ?, ProducerProperties>) getBinder(outputName, outputClass);
-		}
-
+	public <T> Binding<T> bindProducer(T output, boolean cache, BinderWrapper binderWrapper) {
 		ProducerProperties producerProperties = this.bindingServiceProperties
-				.getProducerProperties(outputName);
-		if (binder instanceof ExtendedPropertiesBinder extendedPropertiesBinder) {
-			Object extension = extendedPropertiesBinder.getExtendedProducerProperties(outputName);
+				.getProducerProperties(binderWrapper.destinationName());
+		if (binderWrapper.binder() instanceof ExtendedPropertiesBinder extendedPropertiesBinder) {
+			Object extension = extendedPropertiesBinder.getExtendedProducerProperties(binderWrapper.destinationName());
 			ExtendedProducerProperties extendedProducerProperties = new ExtendedProducerProperties<>(
 					extension);
 			BeanUtils.copyProperties(producerProperties, extendedProducerProperties);
 
 			producerProperties = extendedProducerProperties;
 		}
-		producerProperties.populateBindingName(outputName);
+		producerProperties.populateBindingName(binderWrapper.destinationName());
 		validate(producerProperties);
-		Binding<T> binding = doBindProducer(output, bindingTarget, binder,
+		String bindingTarget = this.bindingServiceProperties.getBindingDestination(binderWrapper.destinationName());
+		Binding<T> binding = doBindProducer(output, bindingTarget, binderWrapper.binder(),
 				producerProperties);
 		// If the downstream binder modified the partition count in the extended producer properties
 		// based on the higher number of partitions provisioned on the target middleware, update that
 		// in the original producer properties.
 		ProducerProperties originalProducerProperties = this.bindingServiceProperties
-			.getProducerProperties(outputName);
+			.getProducerProperties(binderWrapper.destinationName());
 		if (originalProducerProperties.getPartitionCount() < producerProperties.getPartitionCount()) {
 			originalProducerProperties.setPartitionCount(producerProperties.getPartitionCount());
 		}
 		if (cache) {
-			this.producerBindings.put(outputName, binding);
+			this.producerBindings.put(binderWrapper.cacheKey(), binding);
 		}
 		return binding;
 	}
 
 	public <T> Binding<T> bindProducer(T output, String outputName, boolean cache) {
-		return this.bindProducer(output, outputName, cache, null);
+		Class<?> outputClass = output.getClass();
+		if (output instanceof Advised advisedOutput) {
+			outputClass = Stream.of(advisedOutput.getProxiedInterfaces()).filter(c -> !c.getName().contains("org.springframework")).findFirst()
+				.orElse(outputClass);
+		}
+		BinderWrapper binderWrapper = createBinderWrapper(null, outputName, outputClass);
+		return this.bindProducer(output, cache, binderWrapper);
 	}
 
 	public <T> Binding<T> bindProducer(T output, String outputName) {
@@ -316,8 +315,7 @@ public class BindingService {
 	}
 
 	@SuppressWarnings("rawtypes")
-	public Object getExtendedProducerProperties(Object output, String outputName) {
-		Binder binder = getBinder(outputName, output.getClass());
+	public Object getExtendedProducerProperties(Binder binder, String outputName) {
 		if (binder instanceof ExtendedPropertiesBinder extendedPropertiesBinder) {
 			return extendedPropertiesBinder.getExtendedProducerProperties(outputName);
 		}
@@ -396,8 +394,13 @@ public class BindingService {
 		}
 	}
 
-	public void unbindProducers(String outputName) {
-		Binding<?> binding = this.producerBindings.remove(outputName);
+	public void unbindProducers(@Nullable  String binderName, String outputName) {
+		String cacheKey = createChannelCacheKey(binderName, outputName, bindingServiceProperties);
+		unbindProducers(cacheKey);
+	}
+
+	public void unbindProducers(String cacheKey) {
+		Binding<?> binding = this.producerBindings.remove(cacheKey);
 
 		if (binding != null) {
 			binding.stop();
@@ -405,7 +408,7 @@ public class BindingService {
 			binding.unbind();
 		}
 		else if (this.log.isWarnEnabled()) {
-			this.log.warn("Trying to unbind '" + outputName + "', but no binding found.");
+			this.log.warn("Trying to unbind '" + cacheKey + "', but no binding found.");
 		}
 	}
 
@@ -441,6 +444,14 @@ public class BindingService {
 		}
 	}
 
+	public BinderWrapper createBinderWrapper(@Nullable String binderName, String destinationName, Class<?> outputClass) {
+		binderName = getBinderNameIfNeeded(binderName, destinationName, bindingServiceProperties);
+		Binder binder = binderFactory.getBinder(binderName, outputClass);
+		String channelCacheKey = createChannelCacheKey(binderName, destinationName);
+		return new BinderWrapper(binder, destinationName, channelCacheKey);
+	}
+
+
 	public static class LateBinding<T> implements Binding<T> {
 
 		private volatile Binding<T> delegate;
@@ -451,35 +462,49 @@ public class BindingService {
 
 		private final String bindingName;
 
-		private final Object consumerOrProducerproperties;
+		private final Object consumerOrProducerProperties;
 
 		private final boolean isInput;
 
 		final ObjectMapper objectMapper;
 
-		LateBinding(String bindingName, String error, Object consumerOrProducerproperties, boolean isInput, ObjectMapper objectMapper) {
+		private final ReentrantLock lock = new ReentrantLock();
+
+		LateBinding(String bindingName, String error, Object consumerOrProducerProperties, boolean isInput, ObjectMapper objectMapper) {
 			super();
 			this.error = error;
 			this.bindingName = bindingName;
-			this.consumerOrProducerproperties = consumerOrProducerproperties;
+			this.consumerOrProducerProperties = consumerOrProducerProperties;
 			this.isInput = isInput;
 			this.objectMapper = objectMapper;
 		}
 
-		public synchronized void setDelegate(Binding<T> delegate) {
-			if (this.unbound) {
-				delegate.unbind();
+		public void setDelegate(Binding<T> delegate) {
+			try {
+				this.lock.lock();
+				if (this.unbound) {
+					delegate.unbind();
+				}
+				else {
+					this.delegate = delegate;
+				}
 			}
-			else {
-				this.delegate = delegate;
+			finally {
+				this.lock.unlock();
 			}
 		}
 
 		@Override
-		public synchronized void unbind() {
-			this.unbound = true;
-			if (this.delegate != null) {
-				this.delegate.unbind();
+		public void unbind() {
+			try {
+				this.lock.lock();
+				this.unbound = true;
+				if (this.delegate != null) {
+					this.delegate.unbind();
+				}
+			}
+			finally {
+				this.lock.unlock();
 			}
 		}
 
@@ -507,8 +532,8 @@ public class BindingService {
 		public Map<String, Object> getExtendedInfo() {
 			Map<String, Object> extendedInfo = new LinkedHashMap<>();
 			extendedInfo.put("bindingDestination", this.getBindingName());
-			extendedInfo.put(consumerOrProducerproperties.getClass().getSimpleName(),
-					this.objectMapper.convertValue(consumerOrProducerproperties, Map.class));
+			extendedInfo.put(consumerOrProducerProperties.getClass().getSimpleName(),
+					this.objectMapper.convertValue(consumerOrProducerProperties, Map.class));
 			return extendedInfo;
 		}
 

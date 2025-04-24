@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 the original author or authors.
+ * Copyright 2019-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package org.springframework.cloud.stream.binder.kafka.integration;
 
+import java.util.Locale;
 import java.util.Map;
 
 import org.apache.kafka.clients.consumer.Consumer;
@@ -64,7 +65,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 		"spring.cloud.stream.kafka.binder.transaction.producer.configuration.acks=all"})
 @DirtiesContext
 @EmbeddedKafka(topics = "output", controlledShutdown = true, brokerProperties = {"transaction.state.log.replication.factor=1",
-	"transaction.state.log.min.isr=1"}, bootstrapServersProperty = "spring.kafka.bootstrap-servers")
+	"transaction.state.log.min.isr=1"})
 class ProducerOnlyTransactionTests {
 
 	@Autowired
@@ -86,7 +87,7 @@ class ProducerOnlyTransactionTests {
 		props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
 		props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
 		props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-		props.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, IsolationLevel.READ_COMMITTED.name().toLowerCase());
+		props.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, IsolationLevel.READ_COMMITTED.name().toLowerCase(Locale.ROOT));
 		Consumer<?, ?> consumer = new KafkaConsumer<>(props);
 		embeddedKafkaBrokera.consumeFromAllEmbeddedTopics(consumer);
 		ConsumerRecord<?, ?> record = KafkaTestUtils.getSingleRecord(consumer, "output");

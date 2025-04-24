@@ -1,5 +1,5 @@
 /*
- * Copyright 2021-2023 the original author or authors.
+ * Copyright 2021-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,13 +26,14 @@ import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.cloud.stream.binder.Binding;
 import org.springframework.cloud.stream.binder.kafka.ListenerContainerWithDlqAndRetryCustomizer;
 import org.springframework.cloud.stream.binder.kafka.support.ProducerConfigCustomizer;
 import org.springframework.cloud.stream.binding.BindingsLifecycleController;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.listener.AbstractMessageListenerContainer;
 import org.springframework.kafka.listener.CommonErrorHandler;
@@ -59,7 +60,7 @@ import static org.mockito.Mockito.mock;
 		"spring.cloud.stream.bindings.retryInContainer-in-0.group=bar",
 		"spring.cloud.stream.kafka.bindings.retryInBinder-in-0.consumer.enable-dlq=true",
 		"spring.cloud.stream.kafka.bindings.retryInContainer-in-0.consumer.enable-dlq=true"})
-@EmbeddedKafka(bootstrapServersProperty = "spring.kafka.bootstrap-servers")
+@EmbeddedKafka
 @DirtiesContext
 class KafkaRetryDlqBinderOrContainerTests {
 
@@ -83,7 +84,8 @@ class KafkaRetryDlqBinderOrContainerTests {
 
 	}
 
-	@SpringBootApplication
+	@EnableAutoConfiguration
+	@Configuration
 	public static class ConfigCustomizerTestConfig {
 
 		@Bean

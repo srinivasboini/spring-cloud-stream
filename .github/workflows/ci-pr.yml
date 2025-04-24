@@ -4,8 +4,7 @@ on:
   pull_request:
     branches:
       - 'main'
-      - '4.0.x'
-      - '3.2.x'
+      - '4.1.x'
     paths-ignore:
       - '.github/**'
 
@@ -23,7 +22,7 @@ jobs:
         uses: actions/checkout@v2
 
       - name: Setup Maven cache
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: ~/.m2/repository
           key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
@@ -52,7 +51,7 @@ jobs:
 
       - name: Capture Test Results
         if: failure()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: test-results
           path: '*/target/surefire-reports/*.*'

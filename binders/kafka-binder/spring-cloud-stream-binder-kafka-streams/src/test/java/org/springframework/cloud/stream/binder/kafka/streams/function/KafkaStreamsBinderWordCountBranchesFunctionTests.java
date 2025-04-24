@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 the original author or authors.
+ * Copyright 2019-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ package org.springframework.cloud.stream.binder.kafka.streams.function;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 
@@ -55,12 +56,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EmbeddedKafka(topics = {"counts", "foo", "bar"})
 class KafkaStreamsBinderWordCountBranchesFunctionTests {
 
-	private static final EmbeddedKafkaBroker embeddedKafka = EmbeddedKafkaCondition.getBroker();
+	private static EmbeddedKafkaBroker embeddedKafka;
 
 	private static Consumer<String, String> consumer;
 
 	@BeforeAll
 	public static void setUp() throws Exception {
+		embeddedKafka = EmbeddedKafkaCondition.getBroker();
 		Map<String, Object> consumerProps = KafkaTestUtils.consumerProps("groupx", "false",
 				embeddedKafka);
 		consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
@@ -189,7 +191,7 @@ class KafkaStreamsBinderWordCountBranchesFunctionTests {
 
 			return input -> {
 				final Map<String, KStream<Object, WordCount>> stringKStreamMap = input
-						.flatMapValues(value -> Arrays.asList(value.toLowerCase().split("\\W+")))
+						.flatMapValues(value -> Arrays.asList(value.toLowerCase(Locale.ROOT).split("\\W+")))
 						.groupBy((key, value) -> value)
 						.windowedBy(TimeWindows.of(Duration.ofSeconds(5)))
 						.count(Materialized.as("WordCounts-branch"))

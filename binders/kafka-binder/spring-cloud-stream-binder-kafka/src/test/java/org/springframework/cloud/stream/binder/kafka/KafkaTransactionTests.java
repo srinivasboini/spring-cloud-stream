@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2023 the original author or authors.
+ * Copyright 2018-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
 import org.springframework.cloud.stream.binder.ExtendedProducerProperties;
 import org.springframework.cloud.stream.binder.kafka.properties.KafkaBinderConfigurationProperties;
@@ -70,12 +71,12 @@ class KafkaTransactionTests {
 
 	@SuppressWarnings({ "rawtypes", "unchecked" })
 	@Test
-	void producerRunsInTx() {
+	void producerRunsInTx() throws Exception {
 		KafkaProperties kafkaProperties = new TestKafkaProperties();
 		kafkaProperties.setBootstrapServers(Collections
 				.singletonList(embeddedKafka.getBrokersAsString()));
 		KafkaBinderConfigurationProperties configurationProperties = new KafkaBinderConfigurationProperties(
-				kafkaProperties);
+				kafkaProperties, mock(ObjectProvider.class));
 		configurationProperties.getTransaction().setTransactionIdPrefix("foo-");
 		configurationProperties.getTransaction().getProducer().setUseNativeEncoding(true);
 		KafkaTopicProvisioner provisioningProvider = new KafkaTopicProvisioner(
@@ -110,6 +111,10 @@ class KafkaTransactionTests {
 		GenericApplicationContext applicationContext = new GenericApplicationContext();
 		applicationContext.refresh();
 		binder.setApplicationContext(applicationContext);
+
+		// Important: Initialize the binder to trigger onInit()
+		binder.afterPropertiesSet();
+
 		DirectChannel channel = new DirectChannel();
 		KafkaProducerProperties extension = new KafkaProducerProperties();
 		ExtendedProducerProperties<KafkaProducerProperties> properties = new ExtendedProducerProperties<>(

@@ -17,19 +17,20 @@
 package org.springframework.cloud.stream.function;
 
 import java.io.Serializable;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -80,7 +81,6 @@ import org.springframework.messaging.support.GenericMessage;
 import org.springframework.scheduling.support.PeriodicTrigger;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.Assert.fail;
 
 /**
  *
@@ -95,6 +95,21 @@ class ImplicitFunctionBindingTests {
 		System.clearProperty("spring.cloud.function.definition");
 	}
 
+	@Test
+	void foo() {
+		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(
+			TestChannelBinderConfiguration.getCompleteConfiguration(DoNotFailOnUnknownPropertiesConfiguration.class))
+			.web(WebApplicationType.NONE)
+			.run("--spring.jmx.enabled=false", "--spring.cloud.function.definition=echo")) {
+
+			InputDestination input = context.getBean(InputDestination.class);
+			input.send(new GenericMessage<byte[]>("{\"name\":\"Bubles\",\"id\":\"2\"}".getBytes()), "echo-in-0");
+
+			OutputDestination output = context.getBean(OutputDestination.class);
+			Message<byte[]> result = output.receive(1000, "echo-out-0");
+			assertThat(result.getPayload()).isEqualTo("Bubles".getBytes());
+		}
+	}
 
 	@Test
 	void failedApplicationListenerConfiguration() {
@@ -197,7 +212,7 @@ class ImplicitFunctionBindingTests {
 			InputDestination input = context.getBean(InputDestination.class);
 			try {
 				input.send(new GenericMessage<byte[]>("hello".getBytes()));
-				fail(); // it should since there are no functions and no bindings
+				Assertions.fail(); // it should since there are no functions and no bindings
 			}
 			catch (Exception e) {
 				// good, we expected it
@@ -224,13 +239,13 @@ class ImplicitFunctionBindingTests {
 			InputDestination input = context.getBean(InputDestination.class);
 			try {
 				input.send(new GenericMessage<byte[]>("hello".getBytes()));
-				fail(); // it should since there are no functions and no bindings
+				Assertions.fail(); // it should since there are no functions and no bindings
 			}
 			catch (Exception e) {
 				// good, we expected it
 			}
 
-			Function<byte[], String> function = v -> new String(v).toUpperCase();
+			Function<byte[], String> function = v -> new String(v).toUpperCase(Locale.ROOT);
 			FunctionBindingTestUtils.bind(context, function);
 
 			input.send(new GenericMessage<byte[]>("hello".getBytes()));
@@ -249,7 +264,7 @@ class ImplicitFunctionBindingTests {
 			context.getBean(InputDestination.class);
 		}
 		catch (Exception e) { // should not fail
-			fail();
+			Assertions.fail();
 		}
 	}
 
@@ -509,17 +524,6 @@ class ImplicitFunctionBindingTests {
 		}
 	}
 
-//	@Test
-//	public void testFunctionConfigDisabledIfStreamListenerIsUsed() {
-//		System.clearProperty("spring.cloud.function.definition");
-//		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(
-//				TestChannelBinderConfiguration.getCompleteConfiguration(LegacyConfiguration.class))
-//						.web(WebApplicationType.NONE).run("--spring.jmx.enabled=false")) {
-//
-//			assertThat(context.getBean("supplierInitializer").getClass().getSimpleName()).isEqualTo("NullBean");
-//		}
-//	}
-
 	@Test
 	void declaredTypeVsActualInstance() {
 		System.clearProperty("spring.cloud.function.definition");
@@ -532,7 +536,7 @@ class ImplicitFunctionBindingTests {
 			Message<byte[]> inputMessageOne = MessageBuilder.withPayload("Hello".getBytes()).build();
 
 			inputDestination.send(inputMessageOne);
-			fail();
+			Assertions.fail();
 		}
 		catch (Exception ex) {
 			// good
@@ -656,7 +660,7 @@ class ImplicitFunctionBindingTests {
 
 			try {
 				context.getBean(FunctionConfiguration.class);
-				fail();
+				Assertions.fail();
 			}
 			catch (Exception e) {
 				// ignore
@@ -914,7 +918,8 @@ class ImplicitFunctionBindingTests {
 			OutputDestination outputDestination = context.getBean(OutputDestination.class);
 
 			Message<byte[]> inputMessage = MessageBuilder.withPayload("{\"name\":\"Jim Lahey\",\"id\":420}".getBytes())
-				.setHeader(MessageHeaders.CONTENT_TYPE, "application/json".getBytes(StandardCharsets.UTF_8))
+//				.setHeader(MessageHeaders.CONTENT_TYPE, "application/json".getBytes(StandardCharsets.UTF_8))
+				.setHeader(MessageHeaders.CONTENT_TYPE, "application/json")
 				.build();
 
 			inputDestination.send(inputMessage, "echoPerson-in-0");
@@ -1419,7 +1424,7 @@ class ImplicitFunctionBindingTests {
 		public Function<Flux<Message<Person>>, Flux<Message<Person>>> reactivePojoMessage() {
 			return flux -> flux.map(message -> {
 				Person p = message.getPayload();
-				p.setName(p.getName().toUpperCase());
+				p.setName(p.getName().toUpperCase(Locale.ROOT));
 				return MessageBuilder.withPayload(p).copyHeaders(message.getHeaders()).build();
 			});
 		}
@@ -1621,7 +1626,7 @@ class ImplicitFunctionBindingTests {
 
 		@Bean
 		public Function<String, String> uppercase() {
-			return v -> v.toUpperCase();
+			return v -> v.toUpperCase(Locale.ROOT);
 		}
 
 		@Bean
@@ -1714,6 +1719,27 @@ class ImplicitFunctionBindingTests {
 
 		public void setId(int id) {
 			this.id = id;
+		}
+	}
+
+	public static class Employee {
+		private String name;
+
+		public String getName() {
+			return name;
+		}
+
+		public void setName(String name) {
+			this.name = name;
+		}
+	}
+
+	@EnableAutoConfiguration
+	public static class DoNotFailOnUnknownPropertiesConfiguration {
+
+		@Bean
+		public Function<Employee, String> echo() {
+			return x -> x.getName();
 		}
 	}
 

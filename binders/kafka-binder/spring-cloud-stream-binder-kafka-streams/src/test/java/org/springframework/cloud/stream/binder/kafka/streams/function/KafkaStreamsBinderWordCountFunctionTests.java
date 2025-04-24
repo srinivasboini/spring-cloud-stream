@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 the original author or authors.
+ * Copyright 2019-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
@@ -76,7 +77,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EmbeddedKafka(topics = {"counts", "counts-1", "counts-2", "counts-5", "counts-6"})
 class KafkaStreamsBinderWordCountFunctionTests {
 
-	private static final EmbeddedKafkaBroker embeddedKafka = EmbeddedKafkaCondition.getBroker();
+	private static EmbeddedKafkaBroker embeddedKafka;
 
 	private static Consumer<String, String> consumer;
 
@@ -84,6 +85,7 @@ class KafkaStreamsBinderWordCountFunctionTests {
 
 	@BeforeAll
 	public static void setUp() {
+		embeddedKafka = EmbeddedKafkaCondition.getBroker();
 		Map<String, Object> consumerProps = KafkaTestUtils.consumerProps("group", "false",
 				embeddedKafka);
 		consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
@@ -396,7 +398,7 @@ class KafkaStreamsBinderWordCountFunctionTests {
 		Function<KStream<Object, String>, KStream<String, WordCount>> process() {
 
 			return input -> input
-					.flatMapValues(value -> Arrays.asList(value.toLowerCase().split("\\W+")))
+					.flatMapValues(value -> Arrays.asList(value.toLowerCase(Locale.ROOT).split("\\W+")))
 					.map((key, value) -> new KeyValue<>(value, value))
 					.groupByKey(Grouped.with(Serdes.String(), Serdes.String()))
 					.windowedBy(TimeWindows.of(Duration.ofMillis(5000)))
@@ -438,7 +440,7 @@ class KafkaStreamsBinderWordCountFunctionTests {
 		Function<KStream<Object, String>, KStream<?, WordCount>> process() {
 			return input -> input
 					.flatMapValues(
-							value -> Arrays.asList(value.toLowerCase().split("\\W+")))
+							value -> Arrays.asList(value.toLowerCase(Locale.ROOT).split("\\W+")))
 					.map((key, value) -> new KeyValue<>(value, value))
 					.groupByKey(Grouped.with(Serdes.String(), Serdes.String()))
 					.windowedBy(TimeWindows.ofSizeWithNoGrace(Duration.ofSeconds(5))).count(Materialized.as("foobar-WordCounts"))

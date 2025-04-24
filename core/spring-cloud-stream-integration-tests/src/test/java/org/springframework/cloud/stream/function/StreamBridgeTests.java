@@ -18,14 +18,18 @@ package org.springframework.cloud.stream.function;
 
 import java.lang.reflect.Field;
 import java.net.URI;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -53,6 +57,7 @@ import org.springframework.cloud.stream.config.BindingServiceProperties;
 import org.springframework.cloud.stream.messaging.DirectWithAttributesChannel;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.core.codec.CodecException;
 import org.springframework.integration.channel.AbstractMessageChannel;
 import org.springframework.integration.channel.DirectChannel;
 import org.springframework.integration.config.GlobalChannelInterceptor;
@@ -80,6 +85,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  *
  * @author Oleg Zhurakousky
  * @author Soby Chacko
+ * @author Omer Celik
  *
  */
 class StreamBridgeTests {
@@ -198,6 +204,24 @@ class StreamBridgeTests {
 		}
 	}
 
+	// For more context on this test: https://github.com/spring-cloud/spring-cloud-stream/issues/3078
+	@Test
+	void functionInvocationWrapperNullError() {
+		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(
+			TestChannelBinderConfiguration.getCompleteConfiguration(
+				EmptyConfiguration.class)).web(WebApplicationType.NONE).run(
+			"--spring.cloud.stream.source=outputA",
+			"--spring.jmx.enabled=false")) {
+			StreamBridge streamBridge = context.getBean(StreamBridge.class);
+			try {
+				streamBridge.send("outputA-out-0", new CodecException("invalidException"));
+			}
+			catch (RuntimeException exception) {
+				assertThat(exception.getMessage()).isEqualTo("org.springframework.cloud.function.context.catalog.SimpleFunctionRegistry$FunctionInvocationWrapper returned null");
+			}
+		}
+	}
+
 	// For more context on this test: https://github.com/spring-cloud/spring-cloud-stream/issues/2815
 	@Test
 	void ensurePartitioningWorksWhenNativeEncodingEnabled() {
@@ -214,6 +238,21 @@ class StreamBridgeTests {
 			OutputDestination output = context.getBean(OutputDestination.class);
 			assertThat(output.receive(1000, "outputA-out-0").getHeaders().containsKey("scst_partition")).isTrue();
 			assertThat(output.receive(1000, "outputA-out-0").getHeaders().containsKey("scst_partition")).isTrue();
+		}
+	}
+
+	// See for more details: https://github.com/spring-cloud/spring-cloud-stream/issues/2921
+	@Test
+	void outputBindingsAndRabbitRoutingKeyExpressionComboDoesNotCauseIssues() {
+		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(
+			TestChannelBinderConfiguration.getCompleteConfiguration(
+				EmptyConfiguration.class)).web(WebApplicationType.NONE).run(
+			"--spring.cloud.stream.output-bindings=the-exchange",
+			"--spring.cloud.stream.rabbit.bindings.the-exchange.producer.routing-key-expression=headers['key']")) {
+			// Ensure no exception is thrown from the above properties.
+			// See this issue for more details: https://github.com/spring-cloud/spring-cloud-stream/issues/2921
+			// Without the corresponding chages added in this PR, this config would throw an exception.
+
 		}
 	}
 
@@ -237,7 +276,7 @@ class StreamBridgeTests {
 
 	@SuppressWarnings("rawtypes")
 	@Test
-	void test_2785() throws Exception {
+	void test_2783() throws Exception {
 		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(
 			TestChannelBinderConfiguration.getCompleteConfiguration(
 				EmptyConfiguration.class)).web(WebApplicationType.NONE).run(
@@ -262,6 +301,33 @@ class StreamBridgeTests {
 			assertThat(functionCache.size()).isEqualTo(2);
 			streamBridge.send("outputD-out-0", MessageBuilder.withPayload("A").build());
 			assertThat(functionCache.size()).isEqualTo(3);
+		}
+	}
+
+	@Test
+	void test_3105() throws Exception {
+		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(
+			TestChannelBinderConfiguration.getCompleteConfiguration(
+				EmptyConfiguration.class)).web(WebApplicationType.NONE).run(
+			"--spring.cloud.stream.source=outputA;outputB",
+			"--spring.cloud.stream.bindings.outputA-out-0.producer.partition-count=2",
+			"--spring.cloud.stream.bindings.outputA-out-0.content-type=application/json",
+
+			"--spring.cloud.stream.bindings.outputB-out-0.producer.partition-count=8",
+			"--spring.cloud.stream.bindings.outputB-out-0.content-type=application/json",
+			"--spring.cloud.stream.bindings.outputB-out-0.producer.partition-key-expression=headers['partitionKey']",
+
+			"--spring.jmx.enabled=false")) {
+			StreamBridge streamBridge = context.getBean(StreamBridge.class);
+			Field field =  ReflectionUtils.findField(StreamBridge.class, "streamBridgeFunctionCache");
+			Objects.requireNonNull(field).setAccessible(true);
+
+
+			streamBridge.send("outputB-out-0", MessageBuilder.withPayload("outputB").setHeader("partitionKey", "oleg").build());
+			streamBridge.send("outputA-out-0", MessageBuilder.withPayload("outputA").build());
+			/*
+			 * Nothing to assert other than this test should not fail due to the cache collision described in GH-3105
+			 */
 		}
 	}
 
@@ -306,6 +372,42 @@ class StreamBridgeTests {
 		}
 	}
 
+	/*
+	 * This test verifies that when a partition key expression is set, then scst_partition is always set, even in
+	 * concurrent scenarios using function binding.
+	 * See https://github.com/spring-cloud/spring-cloud-stream/issues/2961 for more details
+	 */
+	@Test
+	void scstPartitionAlwaysSetEvenInConcurrentScenariosWithFunctions() throws Exception {
+		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(
+			TestChannelBinderConfiguration.getCompleteConfiguration(FunctionPartitionConfiguration.class)).web(
+			WebApplicationType.NONE).run("--spring.cloud.stream.function.definition=concurrentFunction",
+			"--spring.cloud.stream.bindings.concurrentFunction-out-0.producer.partition-count=3",
+			"--spring.cloud.stream.bindings.concurrentFunction-out-0.producer.partition-key-expression=headers['partitionKey']",
+			"--spring.jmx.enabled=false")) {
+			CyclicBarrier barrier = context.getBean(CyclicBarrier.class);
+			StreamBridge streamBridge = context.getBean(StreamBridge.class);
+
+			Thread otherThread = new Thread(() -> streamBridge.send("concurrentFunction-in-0", "wait"));
+			otherThread.start();
+			barrier.await(5, TimeUnit.SECONDS); // wait for thread to be started and function called
+			streamBridge.send("concurrentFunction-in-0", "passThrough");
+			barrier.await(5, TimeUnit.SECONDS); // notifies thread to continue function
+			otherThread.join();
+
+			int messagesWithoutScstPartition = 2; // total messages
+			OutputDestination output = context.getBean(OutputDestination.class);
+			Message<byte[]> message = output.receive(1000, "concurrentFunction-out-0");
+			while (message != null) {
+				if (message.getHeaders().containsKey("scst_partition")) {
+					messagesWithoutScstPartition--;
+				}
+				message = output.receive(1000, "concurrentFunction-out-0");
+			}
+			assertThat(messagesWithoutScstPartition).isEqualTo(0);
+		}
+	}
+
 	@Test
 	void withOutputContentTypeWildCardBindings() {
 		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(TestChannelBinderConfiguration
@@ -329,7 +431,7 @@ class StreamBridgeTests {
 
 	// See this issue for more details: https://github.com/spring-cloud/spring-cloud-stream/issues/2805
 	@Test
-	void streamBridgeSendWithBinderNameAndCustomContentType() throws Exception {
+	void streamBridgeSendWithBinderNameAndCustomContentType() {
 		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(TestChannelBinderConfiguration
 			.getCompleteConfiguration(ConsumerConfiguration.class, EmptyConfigurationWithCustomConverters.class))
 			.web(WebApplicationType.NONE).run(
@@ -713,6 +815,45 @@ class StreamBridgeTests {
 	}
 
 	@Test
+	void dynamicDestinationWithBinderNameDestroy() {
+		BindingService bindingService;
+		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(TestChannelBinderConfiguration
+			.getCompleteConfiguration(InterceptorConfiguration.class))
+			.web(WebApplicationType.NONE).run(
+				"--spring.jmx.enabled=false",
+				"--spring.cloud.stream.binders.kafka1.type=kafka",
+				"--spring.cloud.stream.binders.anotherKafka.type=kafka"
+			)) {
+			StreamBridge bridge = context.getBean(StreamBridge.class);
+			bridge.send("binding1", "kafka1", "Omer Celik");
+			bridge.send("binding2", "anotherKafka", "Omer Celik");
+
+			bindingService = context.getBean(BindingService.class);
+		}
+		assertThat(bindingService.getProducerBindingNames().length).isEqualTo(0);
+	}
+
+	@Test
+	void dynamicDestinationWithBinderNameDestroyForCacheSize() {
+		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(TestChannelBinderConfiguration
+			.getCompleteConfiguration(InterceptorConfiguration.class))
+			.web(WebApplicationType.NONE).run(
+				"--spring.jmx.enabled=false",
+				"--spring.cloud.stream.dynamic-destination-cache-size=1",
+				"--spring.cloud.stream.binders.kafka1.type=kafka",
+				"--spring.cloud.stream.binders.anotherKafka.type=kafka"
+			)) {
+			StreamBridge bridge = context.getBean(StreamBridge.class);
+			bridge.send("binding1", "kafka1", "Omer Celik");
+			bridge.send("binding2", "anotherKafka", "Omer Celik");
+
+			BindingService bindingService = context.getBean(BindingService.class);
+			assertThat(bindingService.getProducerBindingNames().length).isEqualTo(1);
+			assertThat(bindingService.getProducerBindingNames()[0]).isEqualTo("anotherKafka:binding2");
+		}
+	}
+
+	@Test
 	void withIntegrationFlowBecauseMarcinSaidSo() {
 		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(TestChannelBinderConfiguration
 			.getCompleteConfiguration(IntegrationFlowConfiguration.class))
@@ -761,11 +902,26 @@ class StreamBridgeTests {
 		assertThat(new String(message.getPayload())).isEqualTo("JOHN DOE");
 	}
 
+	@Test
+	void test_3033() {
+		try (ConfigurableApplicationContext context = new SpringApplicationBuilder(
+			TestChannelBinderConfiguration.getCompleteConfiguration(
+				EmptyConfiguration.class)).web(WebApplicationType.NONE).run(
+			"--spring.cloud.stream.source=outputA",
+			"--spring.jmx.enabled=false")) {
+			StreamBridge streamBridge = context.getBean(StreamBridge.class);
+			streamBridge.send("outputA", MessageBuilder.withPayload("A").build());
+
+			OutputDestination output = context.getBean(OutputDestination.class);
+			assertThat(output.receive(1000, "outputA").getHeaders().containsKey("traceparent")).isTrue();
+		}
+	}
+
 	@EnableAutoConfiguration
 	public static class DynamicProducerDestinationConfig {
 		@Bean
 		public Function<Message<String>, Message<String>> uppercase() {
-			return msg -> MessageBuilder.withPayload(msg.getPayload().toUpperCase())
+			return msg -> MessageBuilder.withPayload(msg.getPayload().toUpperCase(Locale.ROOT))
 				.setHeader("spring.cloud.stream.sendto.destination", "dynamicTopic").build();
 		}
 	}
@@ -852,6 +1008,32 @@ class StreamBridgeTests {
 	}
 
 	@EnableAutoConfiguration
+	public static class FunctionPartitionConfiguration {
+
+		@Bean
+		public CyclicBarrier cyclicBarrierFunction() {
+			return new CyclicBarrier(2);
+		}
+		@Bean
+		public Function<String, Message<String>> concurrentFunction(StreamBridge bridge, BindingServiceProperties properties, CyclicBarrier cyclicBarrierFunction) {
+			return s -> {
+				if (s.startsWith("wait")) {
+					try {
+						cyclicBarrierFunction.await(5, TimeUnit.SECONDS); // wait for notifying main thread to send other event
+						cyclicBarrierFunction.await(5, TimeUnit.SECONDS); // wait for other event been sent
+					}
+					catch (BrokenBarrierException | InterruptedException | TimeoutException e) {
+						throw new RuntimeException(e);
+					}
+				}
+				return MessageBuilder.withPayload(s)
+					.setHeader("partitionKey", s.length())
+					.build();
+			};
+		}
+	}
+
+	@EnableAutoConfiguration
 	public static class InterceptorConfiguration {
 		@Bean
 		@GlobalChannelInterceptor(patterns = "*")
@@ -923,7 +1105,7 @@ class StreamBridgeTests {
 		public IntegrationFlow transform(StreamBridge bridge) {
 			return IntegrationFlow.from("foo").transform(v -> {
 					String s = new String((byte[]) v);
-					return s.toUpperCase();
+					return s.toUpperCase(Locale.ROOT);
 				})
 				.handle(v -> bridge.send("output", v))
 				.get();

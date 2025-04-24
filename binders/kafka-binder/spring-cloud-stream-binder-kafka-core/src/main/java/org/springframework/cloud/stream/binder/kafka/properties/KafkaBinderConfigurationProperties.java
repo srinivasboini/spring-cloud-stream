@@ -36,6 +36,8 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.kafka.KafkaConnectionDetails;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
 import org.springframework.cloud.stream.binder.HeaderMode;
 import org.springframework.cloud.stream.binder.ProducerProperties;
@@ -63,6 +65,7 @@ import org.springframework.util.StringUtils;
  * @author Nico Heller
  * @author Norbert Gyurian
  * @author Boini Srinivas
+ * @author Felix Schultze
  */
 public class KafkaBinderConfigurationProperties {
 
@@ -75,6 +78,8 @@ public class KafkaBinderConfigurationProperties {
 	private final Metrics metrics = new Metrics();
 
 	private final KafkaProperties kafkaProperties;
+
+	private final KafkaConnectionDetails kafkaConnectionDetails;
 
 	/**
 	 * Arbitrary kafka properties that apply to both producers and consumers.
@@ -149,7 +154,17 @@ public class KafkaBinderConfigurationProperties {
 	/**
 	 * Schema registry ssl configuration properties.
 	 */
-	private final String[] schemaRegistryProperties = new String[]{"schema.registry.url", "schema.registry.ssl.keystore.location", "schema.registry.ssl.keystore.password", "schema.registry.ssl.truststore.location", "schema.registry.ssl.truststore.password", "schema.registry.ssl.key.password"};
+	private final String[] schemaRegistryProperties = new String[]{"schema.registry.url",
+		"schema.registry.ssl.keystore.location", "schema.registry.ssl.keystore.password",
+		"schema.registry.ssl.truststore.location", "schema.registry.ssl.truststore.password",
+		"schema.registry.ssl.key.password"};
+
+	/**
+	 * Consumer group.id of the Kafka consumer in
+	 * {@link org.springframework.cloud.stream.binder.kafka.common.AbstractKafkaBinderHealthIndicator} that is used
+	 * for querying metadata from the broker (such as metadata information about the topics).
+	 */
+	private String healthIndicatorConsumerGroup;
 
 	/**
 	 * Earlier, @Autowired on this constructor was necessary for all the properties to be discovered
@@ -159,10 +174,12 @@ public class KafkaBinderConfigurationProperties {
 	 * https://github.com/spring-projects/spring-boot/issues/35564
 	 *
 	 * @param kafkaProperties Spring Kafka properties autoconfigured by Spring Boot
+	 * @param kafkaConnectionDetails Kafka connection details autoconfigured by Spring Boot
 	 */
-	public KafkaBinderConfigurationProperties(KafkaProperties kafkaProperties) {
+	public KafkaBinderConfigurationProperties(KafkaProperties kafkaProperties, ObjectProvider<KafkaConnectionDetails> kafkaConnectionDetails) {
 		Assert.notNull(kafkaProperties, "'kafkaProperties' cannot be null");
 		this.kafkaProperties = kafkaProperties;
+		this.kafkaConnectionDetails = kafkaConnectionDetails.getIfAvailable();
 	}
 
 	public KafkaProperties getKafkaProperties() {
@@ -208,7 +225,7 @@ public class KafkaBinderConfigurationProperties {
 		final String storeLocation = this.configuration.get(storeProperty);
 
 		// If the path is not defined, or it is a local file path do not move the file
-		if (storeLocation != null && !checkIfFileExists(storeLocation)) {
+		if (StringUtils.hasText(storeLocation) && !checkIfFileExists(storeLocation)) {
 			final String fileSystemLocation = moveCertToFileSystem(storeLocation, this.certificateStoreDirectory);
 			// Overriding the value with absolute filesystem path.
 			this.configuration.put(storeProperty, fileSystemLocation);
@@ -384,6 +401,9 @@ public class KafkaBinderConfigurationProperties {
 	 */
 	public Map<String, Object> mergedConsumerConfiguration() {
 		Map<String, Object> consumerConfiguration = new HashMap<>(this.kafkaProperties.buildConsumerProperties(null));
+		if (this.kafkaConnectionDetails != null) {
+			consumerConfiguration.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, this.kafkaConnectionDetails.getConsumerBootstrapServers());
+		}
 		// Copy configured binder properties that apply to consumers
 		// allow schema registry properties to be propagated to consumer configuration
 		for (Map.Entry<String, String> configurationEntry : this.configuration
@@ -410,6 +430,9 @@ public class KafkaBinderConfigurationProperties {
 	 */
 	public Map<String, Object> mergedProducerConfiguration() {
 		Map<String, Object> producerConfiguration = new HashMap<>(this.kafkaProperties.buildProducerProperties(null));
+		if (this.kafkaConnectionDetails != null) {
+			producerConfiguration.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, this.kafkaConnectionDetails.getProducerBootstrapServers());
+		}
 		// Copy configured binder properties that apply to producers
 		for (Map.Entry<String, String> configurationEntry : this.configuration
 			.entrySet()) {
@@ -501,6 +524,14 @@ public class KafkaBinderConfigurationProperties {
 
 	public void setEnableObservation(boolean enableObservation) {
 		this.enableObservation = enableObservation;
+	}
+
+	public String getHealthIndicatorConsumerGroup() {
+		return healthIndicatorConsumerGroup;
+	}
+
+	public void setHealthIndicatorConsumerGroup(String healthIndicatorConsumerGroup) {
+		this.healthIndicatorConsumerGroup = healthIndicatorConsumerGroup;
 	}
 
 	/**
@@ -695,6 +726,8 @@ public class KafkaBinderConfigurationProperties {
 		public KafkaProducerProperties getExtension() {
 			return this.kafkaProducerProperties;
 		}
+
+
 
 	}
 

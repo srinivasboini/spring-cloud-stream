@@ -41,6 +41,11 @@ public final class BinderHeaders {
 	private static final String PREFIX = "scst_";
 
 	/**
+	 * Name of the Message header identifying structure for batch Message headers.
+	 */
+	public static String BATCH_HEADERS = PREFIX + "batchHeaders";
+
+	/**
 	 * Indicates the name of the target destination the binder should use if they
 	 * choose (or have capabilities) to optimize sending output messages to
 	 * dynamic destinations.

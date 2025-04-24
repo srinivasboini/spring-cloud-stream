@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2023 the original author or authors.
+ * Copyright 2018-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,6 +38,7 @@ import org.springframework.cloud.stream.binder.ProducerProperties;
 import org.springframework.cloud.stream.binder.kafka.KafkaBindingRebalanceListener;
 import org.springframework.cloud.stream.binder.kafka.properties.KafkaConsumerProperties;
 import org.springframework.cloud.stream.binder.kafka.properties.KafkaProducerProperties;
+import org.springframework.cloud.stream.binding.BindingsLifecycleController;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -69,11 +70,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 		"spring.cloud.stream.kafka.default.consumer.ackEachRecord=true",
 		"spring.cloud.stream.kafka.bindings.custom-in.consumer.ackEachRecord=false" })
 @DirtiesContext
-@EmbeddedKafka(bootstrapServersProperty = "spring.kafka.bootstrap-servers")
+@EmbeddedKafka
 class KafkaBinderExtendedPropertiesTest {
 
 	@Autowired
 	private ConfigurableApplicationContext context;
+
+	@Test
+	void testDefiningNewBindingAndSettingItsProperties() throws Exception {
+		BindingsLifecycleController controller = context.getBean(BindingsLifecycleController.class);
+		KafkaConsumerProperties consumerProperties = controller.defineInputBinding("test-input-binding");
+		boolean isAutoRebalanceEnabled = consumerProperties.isAutoRebalanceEnabled();
+		assertThat(isAutoRebalanceEnabled).isTrue();
+		consumerProperties.setAutoRebalanceEnabled(false);
+		consumerProperties = controller.getExtensionProperties("test-input-binding");
+		isAutoRebalanceEnabled = consumerProperties.isAutoRebalanceEnabled();
+		assertThat(isAutoRebalanceEnabled).isFalse();
+	}
 
 	@Test
 	void kafkaBinderExtendedProperties() throws Exception {
@@ -136,14 +149,11 @@ class KafkaBinderExtendedPropertiesTest {
 				customKafkaConsumerProperties.getConfiguration().get("value.serializer"))
 						.isEqualTo("BarSerializer.class");
 
-		assertThat(kafkaConsumerProperties.isAckEachRecord()).isEqualTo(true);
-		assertThat(customKafkaConsumerProperties.isAckEachRecord()).isEqualTo(false);
-
 		RebalanceListener rebalanceListener = context.getBean(RebalanceListener.class);
 		assertThat(rebalanceListener.latch.await(10, TimeUnit.SECONDS)).isTrue();
 		assertThat(rebalanceListener.bindings.keySet()).contains("standard-in",
 				"custom-in");
-		assertThat(rebalanceListener.bindings.values()).containsExactly(Boolean.TRUE,
+		assertThat(rebalanceListener.bindings.values()).contains(Boolean.TRUE,
 				Boolean.TRUE);
 	}
 

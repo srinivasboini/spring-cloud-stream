@@ -18,15 +18,23 @@ package org.springframework.cloud.stream.function;
 
 import java.lang.reflect.Type;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 
+import io.micrometer.context.ContextExecutorService;
+import io.micrometer.context.ContextSnapshotFactory;
+import io.micrometer.observation.ObservationRegistry;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.cloud.function.context.FunctionCatalog;
 import org.springframework.cloud.function.context.FunctionRegistration;
@@ -37,6 +45,7 @@ import org.springframework.cloud.function.context.message.MessageUtils;
 import org.springframework.cloud.function.core.FunctionInvocationHelper;
 import org.springframework.cloud.stream.binder.Binder;
 import org.springframework.cloud.stream.binder.BinderFactory;
+import org.springframework.cloud.stream.binder.BinderWrapper;
 import org.springframework.cloud.stream.binder.ProducerProperties;
 import org.springframework.cloud.stream.binding.BindingService;
 import org.springframework.cloud.stream.binding.DefaultPartitioningInterceptor;
@@ -44,9 +53,13 @@ import org.springframework.cloud.stream.binding.NewDestinationBindingCallback;
 import org.springframework.cloud.stream.config.BindingProperties;
 import org.springframework.cloud.stream.config.BindingServiceProperties;
 import org.springframework.cloud.stream.messaging.DirectWithAttributesChannel;
+import org.springframework.context.ApplicationEvent;
+import org.springframework.context.ApplicationListener;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.ResolvableType;
 import org.springframework.integration.channel.AbstractMessageChannel;
+import org.springframework.integration.channel.AbstractSubscribableChannel;
+import org.springframework.integration.channel.ExecutorChannel;
 import org.springframework.integration.config.GlobalChannelInterceptorProcessor;
 import org.springframework.integration.support.MessageBuilder;
 import org.springframework.lang.Nullable;
@@ -54,31 +67,37 @@ import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.support.GenericMessage;
 import org.springframework.util.Assert;
+import org.springframework.util.ClassUtils;
 import org.springframework.util.MimeType;
 import org.springframework.util.MimeTypeUtils;
 import org.springframework.util.ObjectUtils;
 import org.springframework.util.StringUtils;
 
+import static org.springframework.cloud.stream.utils.CacheKeyCreatorUtils.createChannelCacheKey;
+
+
 /**
  * A class which allows user to send data to an output binding.
  * While in a common scenario of a typical spring-cloud-stream application user rarely
- * has to manually send data, there are times when the sources of data are outside of
- * spring-cloud-stream context and therefore we need to bridge such foreign sources
+ * has to manually send data, there are times when the sources of data are outside
+ * spring-cloud-stream context, and therefore we need to bridge such foreign sources
  * with spring-cloud-stream.
  * <br><br>
  * This utility class allows user to do just that - <i>bridge non-spring-cloud-stream applications
  * with spring-cloud-stream</i> by providing a mechanism (bridge) to send data to an output binding while
- * maintaining the  same invocation contract (i.e., type conversion, partitioning etc) as if it was
+ * maintaining the  same invocation contract (i.e., type conversion, partitioning etc.) as if it was
  * done through a declared function.
  *
  * @author Oleg Zhurakousky
  * @author Soby Chacko
  * @author Byungjun You
+ * @author Michał Rowicki
+ * @author Omer Celik
  * @since 3.0.3
  *
  */
 @SuppressWarnings("rawtypes")
-public final class StreamBridge implements StreamOperations, SmartInitializingSingleton, DisposableBean {
+public final class StreamBridge implements StreamOperations, SmartInitializingSingleton, DisposableBean, ApplicationListener<ApplicationEvent> {
 
 	private static final String STREAM_BRIDGE_FUNC_NAME = "streamBridge";
 
@@ -96,12 +115,22 @@ public final class StreamBridge implements StreamOperations, SmartInitializingSi
 
 	private boolean initialized;
 
+	private boolean async;
+
 	private final BindingService bindingService;
 
 	private final Map<Integer, FunctionInvocationWrapper> streamBridgeFunctionCache;
 
 	private final FunctionInvocationHelper<?> functionInvocationHelper;
 
+	private ExecutorService executorService;
+
+	private static final boolean isContextPropagationPresent = ClassUtils.isPresent(
+			"io.micrometer.context.ContextSnapshotFactory", StreamBridge.class.getClassLoader());
+
+	private static final ReentrantLock lock = new ReentrantLock();
+
+	private ObservationRegistry observationRegistry = ObservationRegistry.NOOP;
 	/**
 	 *
 	 * @param functionCatalog instance of {@link FunctionCatalog}
@@ -110,7 +139,8 @@ public final class StreamBridge implements StreamOperations, SmartInitializingSi
 	 */
 	@SuppressWarnings("serial")
 	StreamBridge(FunctionCatalog functionCatalog, BindingServiceProperties bindingServiceProperties,
-		ConfigurableApplicationContext applicationContext, @Nullable NewDestinationBindingCallback destinationBindingCallback) {
+		ConfigurableApplicationContext applicationContext, @Nullable NewDestinationBindingCallback destinationBindingCallback, ObjectProvider<ObservationRegistry> observationRegistries) {
+		this.executorService = Executors.newCachedThreadPool();
 		Assert.notNull(functionCatalog, "'functionCatalog' must not be null");
 		Assert.notNull(applicationContext, "'applicationContext' must not be null");
 		Assert.notNull(bindingServiceProperties, "'bindingServiceProperties' must not be null");
@@ -133,7 +163,8 @@ public final class StreamBridge implements StreamOperations, SmartInitializingSi
 			}
 		};
 		this.functionInvocationHelper = applicationContext.getBean(FunctionInvocationHelper.class);
-		this.streamBridgeFunctionCache = new HashMap<>();
+		this.streamBridgeFunctionCache = new ConcurrentHashMap<>();
+		observationRegistries.ifAvailable(registry -> this.observationRegistry = registry);
 	}
 
 	@Override
@@ -181,13 +212,21 @@ public final class StreamBridge implements StreamOperations, SmartInitializingSi
 						: new GenericMessage<>(data, Collections.singletonMap(MessageUtils.TARGET_PROTOCOL, targetType));
 
 		Message<?> resultMessage;
-		synchronized (this) {
+		lock.lock();
+		try {
 			resultMessage = (Message<byte[]>) functionToInvoke.apply(messageToSend);
 		}
+		finally {
+			lock.unlock();
+		}
 
-		if (resultMessage == null
-			&& ((Message) messageToSend).getPayload().getClass().getName().equals("org.springframework.kafka.support.KafkaNull")) {
-			resultMessage = messageToSend;
+		if (resultMessage == null) {
+			if (((Message) messageToSend).getPayload().getClass().getName().equals("org.springframework.kafka.support.KafkaNull")) {
+				resultMessage = messageToSend;
+			}
+			else {
+				throw new RuntimeException(functionToInvoke.getClass().getName() + " returned null");
+			}
 		}
 
 		resultMessage = (Message<?>) this.functionInvocationHelper.postProcessResult(resultMessage, null);
@@ -201,20 +240,21 @@ public final class StreamBridge implements StreamOperations, SmartInitializingSi
 				+ Boolean.hashCode(producerProperties.isPartitioned())
 				+ producerProperties.getPartitionCount();
 
+		if (producerProperties.getPartitionKeyExpression() != null && producerProperties.getBindingName() != null) {
+			hash += producerProperties.getBindingName().hashCode();
+		}
+
 		return hash;
 	}
 
-	private synchronized FunctionInvocationWrapper getStreamBridgeFunction(String outputContentType, ProducerProperties producerProperties) {
+	private FunctionInvocationWrapper getStreamBridgeFunction(String outputContentType, ProducerProperties producerProperties) {
 		int streamBridgeFunctionKey = this.hashProducerProperties(producerProperties, outputContentType);
-		if (this.streamBridgeFunctionCache.containsKey(streamBridgeFunctionKey)) {
-			return this.streamBridgeFunctionCache.get(streamBridgeFunctionKey);
-		}
-		else {
+
+		return this.streamBridgeFunctionCache.computeIfAbsent(streamBridgeFunctionKey, key -> {
 			FunctionInvocationWrapper functionToInvoke = this.functionCatalog.lookup(STREAM_BRIDGE_FUNC_NAME, outputContentType.toString());
-			this.streamBridgeFunctionCache.put(streamBridgeFunctionKey, functionToInvoke);
 			functionToInvoke.setSkipOutputConversion(producerProperties.isUseNativeEncoding());
 			return functionToInvoke;
-		}
+		});
 	}
 
 	@Override
@@ -232,56 +272,49 @@ public final class StreamBridge implements StreamOperations, SmartInitializingSi
 	}
 
 	@SuppressWarnings({ "unchecked"})
-	synchronized MessageChannel resolveDestination(String destinationName, ProducerProperties producerProperties, String binderName) {
-		MessageChannel messageChannel = null;
-		if (StringUtils.hasText(binderName)) {
-			messageChannel = this.channelCache.get(binderName + ":" + destinationName);
-		}
-		else {
-			messageChannel = this.channelCache.get(destinationName);
-		}
-		if (messageChannel == null) {
-			if (this.applicationContext.containsBean(destinationName)) {
-				messageChannel = this.applicationContext.getBean(destinationName, MessageChannel.class);
-				String[] consumerBindingNames = this.bindingService.getConsumerBindingNames();
-				if (messageChannel instanceof AbstractMessageChannel) {
-					addPartitioningInterceptorIfNeedBe(producerProperties, destinationName, (AbstractMessageChannel) messageChannel);
-				}
-				if (ObjectUtils.containsElement(consumerBindingNames, destinationName)) { //GH-2563
-					logger.warn("You seem to be sending data to the input binding.  It is not "
-							+ "recommended, since you are bypassing the binder and this the messaging system exposed by the binder.");
-				}
-			}
-			else {
-				messageChannel = new DirectWithAttributesChannel();
-				((DirectWithAttributesChannel) messageChannel).setApplicationContext(applicationContext);
-				((DirectWithAttributesChannel) messageChannel).setComponentName(destinationName);
-				if (this.destinationBindingCallback != null) {
-					Object extendedProducerProperties = this.bindingService
-							.getExtendedProducerProperties(messageChannel, destinationName);
-					this.destinationBindingCallback.configure(destinationName, messageChannel,
-							producerProperties, extendedProducerProperties);
-				}
-
-				Binder binder = null;
-				if (StringUtils.hasText(binderName)) {
-					BinderFactory binderFactory = this.applicationContext.getBean(BinderFactory.class);
-					binder = binderFactory.getBinder(binderName, messageChannel.getClass());
-				}
-				addPartitioningInterceptorIfNeedBe(producerProperties, destinationName, (AbstractMessageChannel) messageChannel);
-				addGlobalChannelInterceptorProcessor((AbstractMessageChannel) messageChannel, destinationName);
-
-				this.bindingService.bindProducer(messageChannel, destinationName, true, binder);
-				if (StringUtils.hasText(binderName)) {
-					this.channelCache.put(binderName + ":" + destinationName, messageChannel);
+	MessageChannel resolveDestination(String destinationName, ProducerProperties producerProperties, String binderName) {
+		lock.lock();
+		try {
+			MessageChannel messageChannel = this.channelCache.get(createChannelCacheKey(binderName, destinationName, bindingServiceProperties));
+			if (messageChannel == null) {
+				if (this.applicationContext.containsBean(destinationName)) {
+					messageChannel = this.applicationContext.getBean(destinationName, MessageChannel.class);
+					String[] consumerBindingNames = this.bindingService.getConsumerBindingNames();
+					if (messageChannel instanceof AbstractMessageChannel) {
+						addPartitioningInterceptorIfNeedBe(producerProperties, destinationName, (AbstractMessageChannel) messageChannel);
+					}
+					if (ObjectUtils.containsElement(consumerBindingNames, destinationName)) { //GH-2563
+						logger.warn("You seem to be sending data to the input binding.  It is not "
+								+ "recommended, since you are bypassing the binder and this the messaging system exposed by the binder.");
+					}
 				}
 				else {
-					this.channelCache.put(destinationName, messageChannel);
+					messageChannel = this.isAsync() ? new ExecutorChannel(this.executorService) : new DirectWithAttributesChannel();
+					((AbstractSubscribableChannel) messageChannel).setApplicationContext(applicationContext);
+					((AbstractSubscribableChannel) messageChannel).setComponentName(destinationName);
+
+					BinderWrapper binderWrapper = bindingService.createBinderWrapper(binderName, destinationName, messageChannel.getClass());
+					((AbstractSubscribableChannel) messageChannel).registerObservationRegistry(observationRegistry);
+					if (this.destinationBindingCallback != null) {
+						Object extendedProducerProperties = this.bindingService
+								.getExtendedProducerProperties(binderWrapper.binder(), destinationName);
+						this.destinationBindingCallback.configure(destinationName, messageChannel,
+								producerProperties, extendedProducerProperties);
+					}
+
+					addPartitioningInterceptorIfNeedBe(producerProperties, destinationName, (AbstractMessageChannel) messageChannel);
+					addGlobalChannelInterceptorProcessor((AbstractMessageChannel) messageChannel, destinationName);
+
+					this.bindingService.bindProducer(messageChannel, true, binderWrapper);
+					this.channelCache.put(binderWrapper.cacheKey(), messageChannel);
 				}
 			}
-		}
 
-		return messageChannel;
+			return messageChannel;
+		}
+		finally {
+			lock.unlock();
+		}
 	}
 
 	private void addPartitioningInterceptorIfNeedBe(ProducerProperties producerProperties, String destinationName, AbstractMessageChannel messageChannel) {
@@ -310,8 +343,41 @@ public final class StreamBridge implements StreamOperations, SmartInitializingSi
 
 	@Override
 	public void destroy() throws Exception {
+		this.executorService.shutdown();
+		if (!this.executorService.awaitTermination(10000, TimeUnit.MILLISECONDS)) {
+			logger.warn("Failed to terminate executor. Terminating current tasks.");
+			this.executorService.shutdownNow();
+		}
+
+		this.executorService = null;
+		this.async = false;
 		channelCache.keySet().forEach(bindingService::unbindProducers);
 		channelCache.clear();
 	}
 
+	public boolean isAsync() {
+		return async;
+	}
+
+	public void setAsync(boolean async) {
+		if (isContextPropagationPresent) {
+			this.executorService = ContextPropagationHelper.wrap(this.executorService);
+		}
+		this.async = async;
+	}
+
+	// see https://github.com/spring-cloud/spring-cloud-stream/issues/3054
+	@Override
+	public void onApplicationEvent(ApplicationEvent event) {
+		// we need to do it by String to avoid cloud-bus and context dependencies
+		if (event.getClass().getName().equals("org.springframework.cloud.bus.event.RefreshRemoteApplicationEvent")) {
+			this.channelCache.clear();
+		}
+	}
+
+	private static final class ContextPropagationHelper {
+		static ExecutorService wrap(ExecutorService executorService) {
+			return ContextExecutorService.wrap(executorService, () -> ContextSnapshotFactory.builder().build().captureAll());
+		}
+	}
 }

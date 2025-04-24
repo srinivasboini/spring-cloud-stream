@@ -267,8 +267,8 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 		if (binderTypes.entrySet().size() > 1 && getBindingServiceProperties().getDefaultBinder() != null) {
 			return getBindingServiceProperties().getDefaultBinder();
 		}
-		Assert.isTrue(binderTypes.entrySet().size() == 1, "More than one binder types found, but no binder specified on the binding");
-		return binderTypes.keySet().iterator().next();
+		Assert.isTrue(binderTypes.entrySet().size() <= 1, "More than one binder types found, but no binder specified on the binding");
+		return (binderTypes.entrySet().size() < 1) ? null : binderTypes.keySet().iterator().next();
 	}
 
 	/**
@@ -305,8 +305,13 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 				bp = bsp.getBindingProperties(bindingName);
 			}
 
-			SubscribableChannel errorChannel = (bp != null && StringUtils.hasText(bp.getErrorHandlerDefinition())) || producerProperties.isErrorChannelEnabled()
-					? registerErrorInfrastructure(producerDestination, producerProperties.getBindingName()) : null;
+			boolean errorHandlerDefined = bp != null && StringUtils.hasText(bp.getErrorHandlerDefinition());
+			SubscribableChannel errorChannel = errorHandlerDefined || producerProperties.isErrorChannelEnabled()
+					? registerErrorInfrastructure(producerDestination, producerProperties.getBindingName(), errorHandlerDefined)
+							: null;
+
+			String errorChannelName = errorsBaseName(producerDestination, producerProperties.getBindingName());
+			this.subscribeFunctionErrorHandler(errorChannelName, producerProperties.getBindingName());
 
 			producerMessageHandler = createProducerMessageHandler(producerDestination,
 					producerProperties, outputChannel, errorChannel);
@@ -361,6 +366,14 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 			@Override
 			public Map<String, Object> getExtendedInfo() {
 				return doGetExtendedInfo(destination, producerProperties);
+			}
+
+			@SuppressWarnings({ "unchecked", "hiding" })
+			public <P> P getExtension() {
+				if (producerProperties instanceof ExtendedProducerProperties extendedProperties) {
+					return (P) extendedProperties.getExtension();
+				}
+				return null;
 			}
 
 			@Override
@@ -546,6 +559,14 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 					return doGetExtendedInfo(destination, properties);
 				}
 
+				@SuppressWarnings({ "unchecked", "hiding" })
+				public <P> P getExtension() {
+					if (properties instanceof ExtendedConsumerProperties extendedProperties) {
+						return (P) extendedProperties.getExtension();
+					}
+					return null;
+				}
+
 				@Override
 				public boolean isInput() {
 					return true;
@@ -727,7 +748,7 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 	 * @return the channel.
 	 */
 	private SubscribableChannel registerErrorInfrastructure(
-			ProducerDestination destination, String bindingName) {
+			ProducerDestination destination, String bindingName, boolean errorHandlerDefinitionAvailable) {
 
 		String errorChannelName = errorsBaseName(destination, bindingName);
 		SubscribableChannel errorChannel = new PublishSubscribeChannel();
@@ -751,7 +772,7 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 		}
 
 		MessageChannel defaultErrorChannel = null;
-		if (getApplicationContext()
+		if (!errorHandlerDefinitionAvailable && getApplicationContext()
 				.containsBean(IntegrationContextUtils.ERROR_CHANNEL_BEAN_NAME)) {
 			defaultErrorChannel = getApplicationContext().getBean(
 					IntegrationContextUtils.ERROR_CHANNEL_BEAN_NAME,
@@ -886,10 +907,14 @@ public abstract class AbstractMessageChannelBinder<C extends ConsumerProperties,
 
 		// Setup a bridge to global errorChannel to ensure logging of errors could be controlled via standard SI way
 		if (this.getApplicationContext().containsBean(IntegrationContextUtils.ERROR_CHANNEL_BEAN_NAME) && this.isSubscribable(binderErrorChannel)) {
-			SubscribableChannel globalErrorChannel = this.getApplicationContext().getBean(IntegrationContextUtils.ERROR_CHANNEL_BEAN_NAME, SubscribableChannel.class);
-			BridgeHandler bridge = new BridgeHandler();
-			bridge.setOutputChannel(globalErrorChannel);
-			binderErrorChannel.subscribe(bridge);
+			String errorBridgeHandlerName = getErrorBridgeName(destination, group, consumerProperties);
+			if (!getApplicationContext().containsBean(errorBridgeHandlerName)) {
+				SubscribableChannel globalErrorChannel = this.getApplicationContext().getBean(IntegrationContextUtils.ERROR_CHANNEL_BEAN_NAME, SubscribableChannel.class);
+				BridgeHandler bridge = new BridgeHandler();
+				bridge.setOutputChannel(globalErrorChannel);
+				binderErrorChannel.subscribe(bridge);
+				((GenericApplicationContext) getApplicationContext()).registerBean(errorBridgeHandlerName, BridgeHandler.class, () -> bridge);
+			}
 		}
 		return new ErrorInfrastructure(binderErrorChannel, recoverer, binderProvidedErrorHandler);
 	}

@@ -1,5 +1,5 @@
 /*
- * Copyright 2021-2021 the original author or authors.
+ * Copyright 2021-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,10 +27,16 @@ import com.fasterxml.jackson.databind.Module;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.springframework.beans.BeanUtils;
+import org.springframework.beans.BeansException;
 import org.springframework.beans.DirectFieldAccessor;
 import org.springframework.cloud.stream.binder.Binding;
+import org.springframework.cloud.stream.function.BindableFunctionProxyFactory;
+import org.springframework.cloud.stream.function.StreamFunctionProperties;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationContextAware;
 import org.springframework.util.Assert;
 import org.springframework.util.ClassUtils;
+import org.springframework.util.CollectionUtils;
 
 /**
  *
@@ -38,9 +44,10 @@ import org.springframework.util.ClassUtils;
  * It is registered as a bean and once injected could be used to control the lifecycle f the bindings.
  *
  * @author Oleg Zhurakousky
+ * @author Soby Chacko
  * @since 3.x
  */
-public class BindingsLifecycleController {
+public class BindingsLifecycleController implements ApplicationContextAware {
 
 	private final List<InputBindingLifecycle> inputBindingLifecycles;
 
@@ -48,9 +55,12 @@ public class BindingsLifecycleController {
 
 	private final ObjectMapper objectMapper;
 
+	private ApplicationContext applicationContext;
+
 	@SuppressWarnings("unchecked")
 	public BindingsLifecycleController(List<InputBindingLifecycle> inputBindingLifecycles,
 			List<OutputBindingLifecycle> outputBindingsLifecycles) {
+
 		Assert.notEmpty(inputBindingLifecycles,
 				"'inputBindingLifecycles' must not be null or empty");
 		this.inputBindingLifecycles = inputBindingLifecycles;
@@ -69,6 +79,56 @@ public class BindingsLifecycleController {
 		catch (ClassNotFoundException ex) {
 			// ignore; jackson-datatype-jsr310 not available
 		}
+	}
+
+	/**
+	 * Allows to dynamically define a new input binding returning its consumer properties for further customization.
+	 * @param <P> the type of consumer properties. For example, if binding derives from Kafka, it will return KafkaConsumerProperties.
+	 * @param bindingName the name of the binding.
+	 * @return instance of the consumer properties.
+	 */
+	public <P> P defineInputBinding(String bindingName) {
+		BindableFunctionProxyFactory bindingProxyFactory =
+				new BindableFunctionProxyFactory(bindingName, 1, 0, this.applicationContext.getBean(StreamFunctionProperties.class), false);
+		this.defineBinding(bindingProxyFactory);
+		return this.getExtensionProperties(bindingName);
+	}
+
+	/**
+	 * Allows to dynamically define a new input binding returning its producer properties for further customization.
+	 * @param <P> the type of producer properties. For example, if binding derives from Kafka, it will return KafkaProducerProperties.
+	 * @param bindingName the name of the binding.
+	 * @return instance of the producer properties.
+	 */
+	public <P> P defineOutputBinding(String bindingName) {
+		BindableFunctionProxyFactory bindingProxyFactory =
+				new BindableFunctionProxyFactory(bindingName, 0, 1, this.applicationContext.getBean(StreamFunctionProperties.class), false);
+		this.defineBinding(bindingProxyFactory);
+		return this.getExtensionProperties(bindingName);
+	}
+
+	/**
+	 * Will return producer or consumer properties for a specified binding. For example, calling `getExtensionProperties("foo-in-0")`
+	 * on Kafka binding  will return an instance of KafkaConsumerProperties.
+	 * @param <T> type of producer or consumer properties for a specified binding
+	 * @param bindingName name of the binding
+	 * @return producer or consumer properties
+	 */
+	public <T> T getExtensionProperties(String bindingName) {
+		List<Binding<?>> locateBinding = BindingsLifecycleController.this.locateBinding(bindingName);
+		if (!CollectionUtils.isEmpty(locateBinding)) {
+			return locateBinding.get(0).getExtension();
+		}
+		return null;
+	}
+
+	/**
+	 * Provide an accessor for the custom ObjectMapper created by this controller.
+	 * @return {@link ObjectMapper}
+	 * @since 4.1.2
+	 */
+	public ObjectMapper getObjectMapper() {
+		return objectMapper;
 	}
 
 	/**
@@ -129,7 +189,7 @@ public class BindingsLifecycleController {
 	 * @return the list of {@link Binding}s
 	 */
 	@SuppressWarnings("unchecked")
-	public List<Map<?, ?>> queryStates() {
+	public List<Map<String, Object>> queryStates() {
 		List<Binding<?>> bindings = new ArrayList<>(gatherInputBindings());
 		bindings.addAll(gatherOutputBindings());
 		return this.objectMapper.convertValue(bindings, List.class);
@@ -145,6 +205,31 @@ public class BindingsLifecycleController {
 		Assert.notNull(name, "'name' must not be null");
 		return this.locateBinding(name);
 	}
+
+	@Override
+	public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
+		this.applicationContext = applicationContext;
+	}
+
+	private void defineBinding(BindableFunctionProxyFactory bindingProxyFactory) {
+		bindingProxyFactory.setApplicationContext(this.applicationContext);
+		bindingProxyFactory.afterPropertiesSet();
+
+		BindingService bindingService = this.applicationContext.getBean(BindingService.class);
+
+		AbstractBindingLifecycle bindingLifecycle;
+		if (bindingProxyFactory.getInputs().size() > 0) {
+			bindingProxyFactory.createAndBindInputs(bindingService);
+			bindingLifecycle = this.applicationContext.getBean(InputBindingLifecycle.class);
+		}
+		else {
+			bindingProxyFactory.createAndBindOutputs(bindingService);
+			bindingLifecycle = this.applicationContext.getBean(OutputBindingLifecycle.class);
+		}
+
+		bindingLifecycle.startBindable(bindingProxyFactory);
+	}
+
 
 	/**
 	 * Queries for all input {@link Binding}s.

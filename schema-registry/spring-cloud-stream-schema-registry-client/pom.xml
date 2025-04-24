@@ -3,7 +3,7 @@
 	<parent>
 		<artifactId>spring-cloud-stream-schema-registry</artifactId>
 		<groupId>org.springframework.cloud</groupId>
-		<version>4.1.1-SNAPSHOT</version>
+		<version>4.3.0-SNAPSHOT</version>
 	</parent>
 	<modelVersion>4.0.0</modelVersion>
 
@@ -40,6 +40,12 @@
 			<artifactId>avro</artifactId>
 		</dependency>
 		<dependency>
+			<groupId>com.fasterxml.jackson.core</groupId>
+			<artifactId>jackson-databind</artifactId>
+			<!--TODO: investigate why we need this hard version here and not inheriting from Spring Boot-->
+			<version>2.15.3</version>
+		</dependency>
+		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-test</artifactId>
 			<scope>test</scope>
@@ -66,15 +72,19 @@
 			</exclusions>
 			<scope>test</scope>
 		</dependency>
-<!--		<dependency>-->
-<!--			&lt;!&ndash; used for testing https://github.com/spring-cloud/spring-cloud-schema-registry/issues/19 &ndash;&gt;-->
-<!--			<groupId>com.fasterxml.jackson.dataformat</groupId>-->
-<!--			<artifactId>jackson-dataformat-xml</artifactId>-->
-<!--			<scope>tests</scope>-->
-<!--		</dependency>-->
 	</dependencies>
 	<build>
 		<plugins>
+			<plugin>
+	            <groupId>org.apache.maven.plugins</groupId>
+	            <artifactId>maven-checkstyle-plugin</artifactId>
+	            <executions>
+	                <execution>
+	                    <id>checkstyle-validation</id>
+	                    <phase>none</phase>
+	                </execution>
+	            </executions>
+	        </plugin>
 			<plugin>
 				<groupId>org.apache.avro</groupId>
 				<artifactId>avro-maven-plugin</artifactId>

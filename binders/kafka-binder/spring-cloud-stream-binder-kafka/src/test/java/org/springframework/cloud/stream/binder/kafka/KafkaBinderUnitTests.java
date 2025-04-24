@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2023 the original author or authors.
+ * Copyright 2017-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -39,6 +40,7 @@ import org.apache.kafka.common.serialization.Deserializer;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
 import org.springframework.cloud.stream.binder.Binding;
 import org.springframework.cloud.stream.binder.ExtendedConsumerProperties;
@@ -68,6 +70,7 @@ import static org.mockito.Mockito.verify;
 /**
  * @author Gary Russell
  * @author Omer Celik
+ * @author Soby Chacko
  * @since 1.2.2
  *
  */
@@ -77,7 +80,7 @@ class KafkaBinderUnitTests {
 	void propertyOverrides() throws Exception {
 		KafkaProperties kafkaProperties = new TestKafkaProperties();
 		KafkaBinderConfigurationProperties binderConfigurationProperties = new KafkaBinderConfigurationProperties(
-				kafkaProperties);
+				kafkaProperties, mock(ObjectProvider.class));
 		KafkaTopicProvisioner provisioningProvider = new KafkaTopicProvisioner(
 				binderConfigurationProperties, kafkaProperties, prop -> {
 		});
@@ -126,7 +129,7 @@ class KafkaBinderUnitTests {
 		bootProps.getConsumer().getProperties()
 				.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "bar");
 		KafkaBinderConfigurationProperties props = new KafkaBinderConfigurationProperties(
-				bootProps);
+				bootProps, mock(ObjectProvider.class));
 		assertThat(props.mergedConsumerConfiguration()
 				.get(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG)).isEqualTo("bar");
 		props.getConfiguration().put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "baz");
@@ -142,7 +145,7 @@ class KafkaBinderUnitTests {
 		KafkaProperties bootProps = new TestKafkaProperties();
 		bootProps.getProducer().getProperties().put(ProducerConfig.RETRIES_CONFIG, "bar");
 		KafkaBinderConfigurationProperties props = new KafkaBinderConfigurationProperties(
-				bootProps);
+				bootProps, mock(ObjectProvider.class));
 		assertThat(props.mergedProducerConfiguration().get(ProducerConfig.RETRIES_CONFIG))
 				.isEqualTo("bar");
 		props.getConfiguration().put(ProducerConfig.RETRIES_CONFIG, "baz");
@@ -184,7 +187,7 @@ class KafkaBinderUnitTests {
 		partitions.add(new TopicPartition(topic, 0));
 		partitions.add(new TopicPartition(topic, 1));
 		KafkaBinderConfigurationProperties configurationProperties = new KafkaBinderConfigurationProperties(
-				new TestKafkaProperties());
+				new TestKafkaProperties(), mock(ObjectProvider.class));
 		KafkaTopicProvisioner provisioningProvider = mock(KafkaTopicProvisioner.class);
 		ConsumerDestination dest = mock(ConsumerDestination.class);
 		given(dest.getName()).willReturn(topic);
@@ -262,6 +265,12 @@ class KafkaBinderUnitTests {
 					@Override
 					public Consumer<byte[], byte[]> createConsumer(String groupId,
 							String clientIdPrefix, String clientIdSuffix) {
+						return consumer;
+					}
+
+					@Override
+					public Consumer<byte[], byte[]> createConsumer(String groupId, String clientIdPrefix,
+							String clientIdSuffix, Properties properties) {
 						return consumer;
 					}
 

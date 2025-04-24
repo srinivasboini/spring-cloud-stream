@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2023 the original author or authors.
+ * Copyright 2018-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,10 @@ package org.springframework.cloud.stream.binder.kafka;
 import java.util.Collections;
 
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
 import org.springframework.cloud.stream.binder.BinderException;
 import org.springframework.cloud.stream.binder.ExtendedConsumerProperties;
@@ -37,6 +39,7 @@ import org.springframework.retry.policy.SimpleRetryPolicy;
 import org.springframework.retry.support.RetryTemplate;
 
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.mockito.Mockito.mock;
 
 /**
  * @author Soby Chacko
@@ -44,16 +47,22 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 @EmbeddedKafka(brokerProperties = {"auto.create.topics.enable=false"})
 class AutoCreateTopicDisabledTests {
 
-	private static final EmbeddedKafkaBroker embeddedKafka = EmbeddedKafkaCondition.getBroker();
+	private static EmbeddedKafkaBroker embeddedKafka;
+
+	@BeforeAll
+	public static void setUp() {
+		embeddedKafka = EmbeddedKafkaCondition.getBroker();
+	}
 
 	@Test
+	@SuppressWarnings("unchecked")
 	void autoCreateTopicDisabledFailsOnConsumerIfTopicNonExistentOnBroker() {
 
 		KafkaProperties kafkaProperties = new TestKafkaProperties();
 		kafkaProperties.setBootstrapServers(Collections
 			.singletonList(embeddedKafka.getBrokersAsString()));
 		KafkaBinderConfigurationProperties configurationProperties = new KafkaBinderConfigurationProperties(
-			kafkaProperties);
+			kafkaProperties, mock(ObjectProvider.class));
 		// disable auto create topic on the binder.
 		configurationProperties.setAutoCreateTopics(false);
 
@@ -76,6 +85,7 @@ class AutoCreateTopicDisabledTests {
 	}
 
 	@Test
+	@SuppressWarnings("unchecked")
 	void autoCreateTopicDisabledFailsOnProducerIfTopicNonExistentOnBroker() {
 
 		KafkaProperties kafkaProperties = new TestKafkaProperties();
@@ -83,7 +93,7 @@ class AutoCreateTopicDisabledTests {
 				.singletonList(embeddedKafka.getBrokersAsString()));
 
 		KafkaBinderConfigurationProperties configurationProperties = new KafkaBinderConfigurationProperties(
-				kafkaProperties);
+				kafkaProperties, mock(ObjectProvider.class));
 		// disable auto create topic on the binder.
 		configurationProperties.setAutoCreateTopics(false);
 		// reduce the wait time on the producer blocking operations.

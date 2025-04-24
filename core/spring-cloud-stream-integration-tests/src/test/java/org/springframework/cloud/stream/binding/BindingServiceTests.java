@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2023 the original author or authors.
+ * Copyright 2015-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,7 +52,7 @@ import org.springframework.cloud.stream.binder.ConsumerProperties;
 import org.springframework.cloud.stream.binder.DefaultBinderFactory;
 import org.springframework.cloud.stream.binder.DefaultBinderTypeRegistry;
 import org.springframework.cloud.stream.binder.ProducerProperties;
-import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
+import org.springframework.cloud.stream.binder.test.EnableTestBinder;
 import org.springframework.cloud.stream.config.BindingProperties;
 import org.springframework.cloud.stream.config.BindingServiceConfiguration;
 import org.springframework.cloud.stream.config.BindingServiceProperties;
@@ -61,7 +61,6 @@ import org.springframework.cloud.stream.utils.IntegrationTestsMockBinderConfigur
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
 import org.springframework.integration.channel.DirectChannel;
 import org.springframework.integration.test.util.TestUtils;
 import org.springframework.messaging.Message;
@@ -90,12 +89,14 @@ import static org.mockito.Mockito.when;
  * @author Michael Michailidis
  * @author Chris Bono
  * @author Artem Bilan
+ * @author Kotaro Matsumoto
+ * @author Omer Celik
  */
 class BindingServiceTests {
 
 	@SuppressWarnings({ "unchecked", "rawtypes" })
 	@Test
-	void defaultGroup() throws Exception {
+	void defaultGroup() {
 		BindingServiceProperties properties = new BindingServiceProperties();
 		Map<String, BindingProperties> bindingProperties = new HashMap<>();
 		BindingProperties props = new BindingProperties();
@@ -175,7 +176,7 @@ class BindingServiceTests {
 
 	@SuppressWarnings({ "unchecked", "rawtypes" })
 	@Test
-	void multipleConsumerBindingsFromIndexList() throws Exception {
+	void multipleConsumerBindingsFromIndexList() {
 		BindingServiceProperties properties = new BindingServiceProperties();
 		Map<String, BindingProperties> bindingProperties = new HashMap<>();
 		BindingProperties props = new BindingProperties();
@@ -236,7 +237,7 @@ class BindingServiceTests {
 
 	@SuppressWarnings({ "unchecked", "rawtypes" })
 	@Test
-	void consumerBindingWhenMultiplexingIsEnabled() throws Exception {
+	void consumerBindingWhenMultiplexingIsEnabled() {
 		BindingServiceProperties properties = new BindingServiceProperties();
 		Map<String, BindingProperties> bindingProperties = new HashMap<>();
 		BindingProperties props = new BindingProperties();
@@ -282,7 +283,7 @@ class BindingServiceTests {
 
 	@SuppressWarnings({ "unchecked", "rawtypes" })
 	@Test
-	void explicitGroup() throws Exception {
+	void explicitGroup() {
 		BindingServiceProperties properties = new BindingServiceProperties();
 		Map<String, BindingProperties> bindingProperties = new HashMap<>();
 		BindingProperties props = new BindingProperties();
@@ -528,7 +529,7 @@ class BindingServiceTests {
 
 		assertThat(service.getProducerBinding("output")).isSameAs(binding);
 
-		service.unbindProducers(outputChannelName);
+		service.unbindProducers(null, outputChannelName);
 		verify(binder, times(2)).bindProducer(eq("foo"), same(outputChannel),
 			any(ProducerProperties.class));
 		verify(delegate).unbind();
@@ -552,9 +553,8 @@ class BindingServiceTests {
 		assertThat(inputBinding.isRunning()).isFalse();
 	}
 
-	@SuppressWarnings("unchecked")
 	@Test
-	void bindingNameAsTopLevelProperty() throws Exception {
+	void bindingNameAsTopLevelProperty() {
 		ApplicationContext context = new SpringApplicationBuilder(BarConfiguration.class)
 			.web(WebApplicationType.NONE).run();
 
@@ -591,13 +591,13 @@ class BindingServiceTests {
 		return bindingServiceProperties;
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class DefaultConsumerPropertiesTestSink {
 
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class FooConfiguration {
 
@@ -608,7 +608,7 @@ class BindingServiceTests {
 
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class BarConfiguration {
 

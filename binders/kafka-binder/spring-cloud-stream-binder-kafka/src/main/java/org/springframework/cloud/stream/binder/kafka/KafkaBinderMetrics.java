@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2022 the original author or authors.
+ * Copyright 2016-2025 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,16 +20,16 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.ToDoubleFunction;
 
 import io.micrometer.core.instrument.Gauge;
@@ -49,10 +49,12 @@ import org.springframework.cloud.stream.binder.BindingCreatedEvent;
 import org.springframework.cloud.stream.binder.kafka.common.TopicInformation;
 import org.springframework.cloud.stream.binder.kafka.properties.KafkaBinderConfigurationProperties;
 import org.springframework.context.ApplicationListener;
+import org.springframework.context.Lifecycle;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.lang.Nullable;
 import org.springframework.util.ObjectUtils;
+import org.springframework.util.ReflectionUtils;
 
 /**
  * Metrics for Kafka binder.
@@ -67,9 +69,11 @@ import org.springframework.util.ObjectUtils;
  * @author Lars Bilger
  * @author Tomek Szmytka
  * @author Nico Heller
+ * @author Kurt Hong
+ * @author Omer Celik
  */
 public class KafkaBinderMetrics
-		implements MeterBinder, ApplicationListener<BindingCreatedEvent>, AutoCloseable {
+		implements MeterBinder, ApplicationListener<BindingCreatedEvent>, AutoCloseable, Lifecycle {
 
 	private static final int DEFAULT_TIMEOUT = 5;
 
@@ -96,6 +100,10 @@ public class KafkaBinderMetrics
 
 	ScheduledExecutorService scheduler;
 
+	private final ReentrantLock consumerFactoryLock = new ReentrantLock();
+
+	private final AtomicBoolean running = new AtomicBoolean();
+
 	public KafkaBinderMetrics(KafkaMessageChannelBinder binder,
 							KafkaBinderConfigurationProperties binderConfigurationProperties,
 							ConsumerFactory<?, ?> defaultConsumerFactory,
@@ -120,14 +128,14 @@ public class KafkaBinderMetrics
 
 	@Override
 	public void bindTo(MeterRegistry registry) {
-		/**
+		/*
 		 * We can't just replace one scheduler with another.
 		 * Before and even after the old one is gathered by GC, it's threads still exist, consume memory and CPU resources to switch contexts.
 		 * Theoretically, as a result of processing n topics, there will be about (1+n)*n/2 threads simultaneously at the same time.
 		 */
 		if (this.scheduler != null) {
 			LOG.info("Try to shutdown the old scheduler with " + ((ScheduledThreadPoolExecutor) scheduler).getPoolSize() + " threads");
-			this.scheduler.shutdown();
+			this.scheduler.shutdownNow();
 		}
 
 		this.scheduler = Executors.newScheduledThreadPool(this.binder.getTopicsInUse().size());
@@ -230,25 +238,36 @@ public class KafkaBinderMetrics
 		return lag;
 	}
 
-	private synchronized ConsumerFactory<?, ?> createConsumerFactory() {
+	/**
+	 * Double-Checked Locking Optimization was used to avoid unnecessary locking overhead.
+	 */
+	private ConsumerFactory<?, ?> createConsumerFactory() {
 		if (this.defaultConsumerFactory == null) {
-			Map<String, Object> props = new HashMap<>();
-			props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG,
-					ByteArrayDeserializer.class);
-			props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
-					ByteArrayDeserializer.class);
-			Map<String, Object> mergedConfig = this.binderConfigurationProperties
-					.mergedConsumerConfiguration();
-			if (!ObjectUtils.isEmpty(mergedConfig)) {
-				props.putAll(mergedConfig);
-			}
-			if (!props.containsKey(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG)) {
-				props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
-						this.binderConfigurationProperties
+			try {
+				this.consumerFactoryLock.lock();
+				if (this.defaultConsumerFactory == null) {
+					Map<String, Object> props = new HashMap<>();
+					props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG,
+						ByteArrayDeserializer.class);
+					props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
+						ByteArrayDeserializer.class);
+					Map<String, Object> mergedConfig = this.binderConfigurationProperties
+						.mergedConsumerConfiguration();
+					if (!ObjectUtils.isEmpty(mergedConfig)) {
+						props.putAll(mergedConfig);
+					}
+					if (!props.containsKey(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG)) {
+						props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
+							this.binderConfigurationProperties
 								.getKafkaConnectionString());
+					}
+					this.defaultConsumerFactory = new DefaultKafkaConsumerFactory<>(
+						props);
+				}
 			}
-			this.defaultConsumerFactory = new DefaultKafkaConsumerFactory<>(
-					props);
+			finally {
+				this.consumerFactoryLock.unlock();
+			}
 		}
 		return this.defaultConsumerFactory;
 	}
@@ -262,7 +281,50 @@ public class KafkaBinderMetrics
 	}
 
 	@Override
-	public void close() throws Exception {
-		Optional.ofNullable(scheduler).ifPresent(ExecutorService::shutdown);
+	public void close() {
+		if (this.scheduler != null) {
+			this.consumerFactoryLock.lock();
+			try {
+				if (this.meterRegistry != null) {
+					this.meterRegistry.find(OFFSET_LAG_METRIC_NAME).meters().forEach(this.meterRegistry::remove);
+				}
+				this.scheduler.shutdownNow();
+				try {
+					this.scheduler.awaitTermination(
+						binderConfigurationProperties.getMetrics().getOffsetLagMetricsInterval().toSeconds(),
+						TimeUnit.SECONDS);
+				}
+				catch (InterruptedException ex) {
+					Thread.currentThread().interrupt();
+					ReflectionUtils.rethrowRuntimeException(ex);
+				}
+			}
+			finally {
+				this.scheduler = null;
+				this.metadataConsumers.values().forEach(Consumer::close);
+				this.metadataConsumers.clear();
+				this.consumerFactoryLock.unlock();
+			}
+		}
 	}
+
+	@Override
+	public void start() {
+		this.running.set(true);
+		// Nothing else to do here. The 'bindTo()' is called from the 'onApplicationEvent()',
+		// which, in turn, is emitted from the 'AbstractBindingLifecycle.start()' logic.
+	}
+
+	@Override
+	public void stop() {
+		if (this.running.compareAndSet(true, false)) {
+			close();
+		}
+	}
+
+	@Override
+	public boolean isRunning() {
+		return this.running.get();
+	}
+
 }

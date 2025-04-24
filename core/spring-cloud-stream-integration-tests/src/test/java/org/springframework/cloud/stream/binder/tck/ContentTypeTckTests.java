@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2023 the original author or authors.
+ * Copyright 2017-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,14 +29,13 @@ import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.cloud.function.json.JsonMapper;
+import org.springframework.cloud.stream.binder.test.EnableTestBinder;
 import org.springframework.cloud.stream.binder.test.InputDestination;
 import org.springframework.cloud.stream.binder.test.OutputDestination;
 import org.springframework.cloud.stream.binder.test.TestChannelBinder;
-import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Import;
 import org.springframework.lang.Nullable;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageHeaders;
@@ -58,7 +57,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Oleg Zhurakousky
  * @author Gary Russell
  * @author Byungjun You
- *
+ * @author Kotaro Matsumoto
+ * @author Soby Chacko
  */
 class ContentTypeTckTests {
 
@@ -111,7 +111,7 @@ class ContentTypeTckTests {
 	void pojoToStringOutboundContentTypeBinding() {
 		ApplicationContext context = new SpringApplicationBuilder(
 			PojoToStringConfiguration.class).web(WebApplicationType.NONE).run(
-			"--spring.cloud.stream.bindings.echo-out-0.contentType=text/plain",
+			"--spring.cloud.stream.bindings.echo-in-0.contentType=application/json",
 			"--spring.jmx.enabled=false");
 		InputDestination source = context.getBean(InputDestination.class);
 		OutputDestination target = context.getBean(OutputDestination.class);
@@ -119,7 +119,7 @@ class ContentTypeTckTests {
 		source.send(new GenericMessage<>(jsonPayload.getBytes()));
 		Message<byte[]> outputMessage = target.receive();
 		assertThat(outputMessage.getHeaders().get(MessageHeaders.CONTENT_TYPE))
-			.isEqualTo(MimeTypeUtils.TEXT_PLAIN_VALUE);
+			.isEqualTo(MimeTypeUtils.APPLICATION_JSON_VALUE);
 		assertThat(new String(outputMessage.getPayload(), StandardCharsets.UTF_8))
 			.isEqualTo("oleg");
 	}
@@ -173,7 +173,7 @@ class ContentTypeTckTests {
 	void typelessToPojoInboundContentTypeBinding() {
 		ApplicationContext context = new SpringApplicationBuilder(
 			TypelessToPojoConfiguration.class).web(WebApplicationType.NONE).run(
-			"--spring.cloud.stream.bindings.echo-in-0.contentType=text/plain",
+			"--spring.cloud.stream.bindings.echo-in-0.contentType=application/json",
 			"--spring.jmx.enabled=false");
 		InputDestination source = context.getBean(InputDestination.class);
 		OutputDestination target = context.getBean(OutputDestination.class);
@@ -207,7 +207,7 @@ class ContentTypeTckTests {
 	void typelessMessageToPojoInboundContentTypeBinding() {
 		ApplicationContext context = new SpringApplicationBuilder(
 			TypelessMessageToPojoConfiguration.class).web(WebApplicationType.NONE)
-			.run("--spring.cloud.stream.bindings.echo-in-0.contentType=text/plain",
+			.run("--spring.cloud.stream.bindings.echo-in-0.contentType=application/json",
 				"--spring.jmx.enabled=false");
 		InputDestination source = context.getBean(InputDestination.class);
 		OutputDestination target = context.getBean(OutputDestination.class);
@@ -246,7 +246,7 @@ class ContentTypeTckTests {
 		OutputDestination target = context.getBean(OutputDestination.class);
 		String jsonPayload = "{\"name\":\"oleg\"}";
 		source.send(MessageBuilder.withPayload(jsonPayload.getBytes())
-			.setHeader(MessageHeaders.CONTENT_TYPE, MimeType.valueOf("text/plain"))
+			.setHeader(MessageHeaders.CONTENT_TYPE, MimeType.valueOf("application/json"))
 			.build());
 		Message<byte[]> outputMessage = target.receive();
 		assertThat(outputMessage.getHeaders().get(MessageHeaders.CONTENT_TYPE))
@@ -303,7 +303,7 @@ class ContentTypeTckTests {
 		String jsonPayload = "{\"name\":\"oleg\"}";
 		source.send(new GenericMessage<>(jsonPayload.getBytes(),
 			new MessageHeaders(Collections.singletonMap(MessageHeaders.CONTENT_TYPE,
-				MimeTypeUtils.TEXT_PLAIN))));
+				MimeTypeUtils.APPLICATION_JSON_VALUE))));
 		Message<byte[]> outputMessage = target.receive();
 		assertThat(outputMessage.getHeaders().get(MessageHeaders.CONTENT_TYPE))
 			.isEqualTo(MimeTypeUtils.APPLICATION_JSON_VALUE);
@@ -315,7 +315,7 @@ class ContentTypeTckTests {
 	void byteArrayToPojoInboundContentTypeBinding() {
 		ApplicationContext context = new SpringApplicationBuilder(
 			ByteArrayToPojoConfiguration.class).web(WebApplicationType.NONE).run(
-			"--spring.cloud.stream.bindings.echo-in-0.contentType=text/plain",
+			"--spring.cloud.stream.bindings.echo-in-0.contentType=application/json",
 			"--spring.jmx.enabled=false");
 		InputDestination source = context.getBean(InputDestination.class);
 		OutputDestination target = context.getBean(OutputDestination.class);
@@ -338,7 +338,7 @@ class ContentTypeTckTests {
 		String jsonPayload = "{\"name\":\"oleg\"}";
 		source.send(new GenericMessage<>(jsonPayload.getBytes(),
 			new MessageHeaders(Collections.singletonMap(MessageHeaders.CONTENT_TYPE,
-				MimeTypeUtils.TEXT_PLAIN))));
+				MimeTypeUtils.APPLICATION_JSON))));
 		Message<byte[]> outputMessage = target.receive();
 		assertThat(outputMessage.getHeaders().get(MessageHeaders.CONTENT_TYPE))
 			.isEqualTo(MimeTypeUtils.APPLICATION_JSON_VALUE);
@@ -518,7 +518,7 @@ class ContentTypeTckTests {
 	}
 
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class CollectionWithParameterizedTypes {
 
@@ -531,7 +531,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class PojoToPojoConfiguration {
 
@@ -541,7 +541,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class PojoToStringConfiguration {
 
@@ -551,7 +551,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class PojoToByteArrayConfiguration {
 
@@ -561,7 +561,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class ByteArrayToPojoConfiguration {
 
@@ -571,7 +571,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class StringToPojoConfiguration {
 
@@ -581,7 +581,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class TypelessToPojoConfiguration {
 
@@ -593,7 +593,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class TypelessMessageToPojoConfiguration {
 
@@ -605,7 +605,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class TypelessToMessageConfiguration {
 
@@ -616,7 +616,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class TypelessToMessageTextOnlyContentTypeConfiguration {
 
@@ -630,7 +630,7 @@ class ContentTypeTckTests {
 	}
 
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class ByteArrayToByteArrayConfiguration {
 
@@ -640,7 +640,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class StringToStringConfiguration {
 
@@ -650,7 +650,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class StringToMapMessageConfiguration {
 
@@ -663,7 +663,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class PojoMessageToStringMessageConfiguration {
 
@@ -799,7 +799,7 @@ class ContentTypeTckTests {
 
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class MapInputConfiguration {
 
@@ -809,7 +809,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class ListInputConfiguration {
 		@Bean
@@ -818,7 +818,7 @@ class ContentTypeTckTests {
 		}
 	}
 
-	@Import(TestChannelBinderConfiguration.class)
+	@EnableTestBinder
 	@EnableAutoConfiguration
 	public static class MessageHeadersInputConfiguration {
 
